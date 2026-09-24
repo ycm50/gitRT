@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AppxManifest.xml —— 稀疏身份包（《技术实现设计》§11.2）
+  由 CMake configure_file 从 AppxManifest.xml.in 生成；所有 @...@ 变量来自
+  packaging/identity.json（唯一真相源，见 cmake/identity.cmake）。
+  要点：
+   · uap10:AllowExternalContent=true + rescap:unvirtualizedResources 是
+     Add-AppxPackage -ExternalLocation 的必要条件
+   · AppListEntry="none"：不在"已安装应用"里露出（我们不是 Store 应用）
+   · ProcessorArchitecture="neutral"：身份包跨架构，真实 DLL 由 ExternalLocation 提供
+   · Drive（驱动器根目录）不注册：社区实测无效（⚠️M0 复验项）
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  IgnorableNamespaces="uap uap10 rescap desktop4 desktop5 com">
+
+  <Identity Name="@GRT_ID_PACKAGE_NAME@" Publisher="@GRT_ID_PUBLISHER@"
+            Version="@GRT_ID_VERSION@" ProcessorArchitecture="neutral"/>
+
+  <Properties>
+    <DisplayName>@GRT_ID_DISPLAY_NAME@</DisplayName>
+    <PublisherDisplayName>@GRT_ID_PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
+    <Description>@GRT_ID_DESCRIPTION@</Description>
+    <Logo>Assets\storelogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="zh-CN"/>
+    <Resource Language="en-us"/>
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop"
+                        MinVersion="@GRT_ID_MIN_OS@" MaxVersionTested="@GRT_ID_MAX_OS_TESTED@"/>
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust"/>
+    <rescap:Capability Name="unvirtualizedResources"/>
+  </Capabilities>
+
+  <Applications>
+    <Application Id="@GRT_ID_APPLICATION_ID@" Executable="@GRT_ID_EXECUTABLE@"
+                 uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements AppListEntry="none"
+        DisplayName="@GRT_ID_DISPLAY_NAME@" Description="@GRT_ID_DESCRIPTION@"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"/>
+      <Extensions>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="GitRT Shell Command">
+              <com:Class Id="@GRT_ID_CLSID_BARE@" Path="@GRT_ID_SHELL_DLL@" ThreadingModel="STA"/>
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb Id="@GRT_ID_VERB@" Clsid="@GRT_ID_CLSID_BARE@"/>
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="@GRT_ID_VERB@" Clsid="@GRT_ID_CLSID_BARE@"/>
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory\Background">
+              <desktop5:Verb Id="@GRT_ID_VERB@" Clsid="@GRT_ID_CLSID_BARE@"/>
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

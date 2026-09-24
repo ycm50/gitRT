@@ -1,0 +1,12 @@
+#pragma once
+// ---------------------------------------------------------------------------
+// 由 CMake 从 packaging/identity.json 生成 —— 不要直接编辑本文件。
+// 生成点：cmake/identity.cmake（configure_file）
+//
+// 为什么存在：CLSID / publisher / packageName / applicationId 是"三处必须一致、
+// 不一致就静默失败"的值（《产品设计》§3.4）。把它们收敛到 identity.json 之后，
+// 这里只提供 C++ 能直接用的初始化子，杜绝手抄不一致。
+// ---------------------------------------------------------------------------
+
+#define GRT_CLSID_COMMAND_INIT   @GRT_ID_CLSID_INIT@
+#define GRT_GUID_CANONICAL_INIT  @GRT_ID_CANONICAL_INIT@

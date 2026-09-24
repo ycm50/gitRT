@@ -1,0 +1,35 @@
+// GitRT.Shell.dll 资源脚本（由 CMake configure_file 从 gitrt_shell.rc.in 生成）
+//   注意：资源 ID 1 + 类型 24(RT_MANIFEST) 是模块清单的约定位置；
+//   这里用字面量 24 而不是 RT_MANIFEST 宏，避免 windres 对包含顺序的依赖。
+#include <windows.h>
+#include "@GRT_SRC_DIR@/src/core/resource_ids.h"
+
+1 24 "@GRT_SHELL_MANIFEST_FILE@"
+
+101 ICON "@GRT_ICON_APP_FILE@"
+102 ICON "@GRT_ICON_WARN_FILE@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     0,1,0,0
+PRODUCTVERSION  0,1,0,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_DLL
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080404B0"
+    BEGIN
+      VALUE "CompanyName",      "GitRT"
+      VALUE "FileDescription",  "GitRT Shell context menu extension"
+      VALUE "FileVersion",      "@GRT_ID_VERSION@"
+      VALUE "InternalName",     "GitRT.Shell"
+      VALUE "OriginalFilename", "GitRT.Shell.dll"
+      VALUE "ProductName",      "GitRT"
+      VALUE "LegalCopyright",   "MIT License"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0804, 1200
+  END
+END

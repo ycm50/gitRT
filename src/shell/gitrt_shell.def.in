@@ -1,0 +1,10 @@
+; GitRT.Shell.dll 导出表（由 CMake configure_file 从 gitrt_shell.def.in 生成）
+;   · 只导出 COM 入口；其余符号一律不导出（防止把内部符号暴露给 Explorer 进程）
+;   · DllRegisterServer / DllUnregisterServer 只在 GRT_DEV_REGISTER=ON 的开发构建里
+;     出现（§2.8）：发行版的导出表必须只有 2 个符号，由 cmake/check_shell_exports.cmake
+;     在构建期强制校验。
+LIBRARY GitRT.Shell.dll
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE
+@GRT_DEV_DEF_EXPORTS@

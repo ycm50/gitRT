@@ -1,0 +1,22 @@
+# 构建产物
+build/
+*.o
+*.obj
+*.a
+*.exe
+*.dll
+*.pdb
+
+# 开发期自签名与打包产物（见《技术实现设计》§11）
+*.pfx
+*.cer
+*.msix
+*.appx
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.swp

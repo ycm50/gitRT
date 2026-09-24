@@ -1,0 +1,18 @@
+{
+  "_comment": "GitRT 身份与打包参数的唯一真相源（《技术实现设计》§3.4 / §11.1）。cmake/identity.cmake 读取本文件，同时生成 ① DLL 内嵌 msix 清单 ② AppxManifest.xml ③ 版本资源 ④ clsid_values.h。任何一处需要改动都必须改这里。",
+  "publisher": "CN=GitRT",
+  "packageName": "GitRT",
+  "applicationId": "GitRT",
+  "version": "0.1.0.0",
+  "displayName": "GitRT",
+  "publisherDisplayName": "GitRT",
+  "description": "Windows 11 右键菜单 Git 管理器",
+  "executable": "GitRT.exe",
+  "shellDll": "GitRT.Shell.dll",
+  "clsid": "8E1D2F40-7C3A-4B8E-9F01-2A5C6D7E8F90",
+  "_clsid_note": "★ 不带花括号：AppxManifest 的 com:Class/@Id 与 desktop5:Verb/@Clsid 按 schema 必须是 [0-9a-f]{8}-…-{12} 形式，带 {} 会报 0x80080204 / 0xC00CE169（M0-B 实测）。identity.cmake 会同时导出带括号形式供 C++ 使用。",
+  "canonicalGuid": "{2B7C4E19-3D5A-4F82-8C61-7E9D0A1B2C34}",
+  "verbId": "GitRT",
+  "minOsVersion": "10.0.22621.0",
+  "maxOsVersionTested": "10.0.26200.0"
+}

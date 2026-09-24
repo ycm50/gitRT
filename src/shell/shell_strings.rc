@@ -1,0 +1,20 @@
+// GitRT.Shell.dll 字符串资源（《技术实现设计》§3.3）
+//   · 菜单用到的串全部来自共享片段（与 GitRT.exe 同源，杜绝两处不一致）
+//   · 多语言做法：单 .rc 内多个 LANGUAGE 块（windres 支持同一 ID 重复定义），
+//     运行时 LoadStringW 按线程 UI 语言自动选取；不做 .mui 卫星资源
+#include <windows.h>
+#include "../core/resource_ids.h"
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+
+STRINGTABLE
+BEGIN
+#include "../core/menu_strings.zh.rcinc"
+END
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
+STRINGTABLE
+BEGIN
+#include "../core/menu_strings.en.rcinc"
+END

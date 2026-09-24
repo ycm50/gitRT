@@ -1,0 +1,12 @@
+Windows Registry Editor Version 5.00
+
+; tools/dev/legacy-test-unregister.reg —— 撤销传统菜单注册（§2.7 路径 A）
+; 删掉 CLSID 与三处 ExplorerCommandHandler；与 register.reg 对称。
+
+[-HKEY_CURRENT_USER\Software\Classes\CLSID\{8E1D2F40-7C3A-4B8E-9F01-2A5C6D7E8F90}]
+
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\GitRTTest]
+
+[-HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\GitRTTest]
+
+[-HKEY_CURRENT_USER\Software\Classes\*\shell\GitRTTest]

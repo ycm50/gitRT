@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "ucrt64-debug",
+      "displayName": "MSYS2 UCRT64 Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "A:/msys64/ucrt64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "A:/msys64/ucrt64/bin/g++.exe",
+        "CMAKE_RC_COMPILER": "A:/msys64/ucrt64/bin/windres.exe"
+      }
+    },
+    {
+      "name": "ucrt64-release",
+      "displayName": "MSYS2 UCRT64 Release",
+      "inherits": "ucrt64-debug",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "ucrt64-debug", "configurePreset": "ucrt64-debug" },
+    { "name": "ucrt64-release", "configurePreset": "ucrt64-release" }
+  ]
+}

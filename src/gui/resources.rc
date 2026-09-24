@@ -1,0 +1,217 @@
+// GitRT.exe 资源（《技术实现设计》§3.3 资源 ID 段）
+//   windres --codepage=65001（由 CMAKE_RC_FLAGS 提供）→ 文件保存为 UTF-8
+//   windows.h 提供 LANG_*/SUBLANG_*/VS_VERSION_INFO/VFT_APP 等常量
+#include <windows.h>
+#include "../core/resource_ids.h"
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+
+STRINGTABLE
+BEGIN
+  // 分组名 / 命令标题 / flags 标签 / 菜单串与 Shell DLL **同源**（单一维护点）
+#include "../core/menu_strings.zh.rcinc"
+
+  IDS_PARAM_URL       "仓库地址（https / ssh / file 或 user@host:path）"
+  IDS_PARAM_MSG       "提交信息"
+  IDS_PARAM_BRANCH    "分支名"
+  IDS_PARAM_REMOTE    "远端名"
+  IDS_PARAM_REVISION  "修订（如 HEAD~1、提交哈希）"
+  IDS_PARAM_TAG       "标签名"
+  IDS_PARAM_PATTERN   "忽略模式（每行一个）"
+
+  IDS_MSG_READY          "就绪"
+  IDS_MSG_NO_REPO        "尚未选择仓库"
+  IDS_MSG_GIT_NOT_FOUND  "未找到 git.exe（已尝试 PATH 与常见安装位置）"
+  IDS_MSG_CLEAN          "工作区干净，没有需要提交的改动"
+  IDS_MSG_LOADING        "正在读取状态…"
+  IDS_MSG_NOT_IMPLEMENTED "该功能尚未实现（当前为 GUI 首个增量）"
+  IDS_MSG_BUILD_FAILED   "命令构造失败"
+  IDS_MSG_NO_CHANGES     "没有可用的改动"
+  IDS_MSG_IGNORE_ADDED   "已写入 .gitignore"
+  IDS_MSG_IGNORE_EXISTS  "已存在于 .gitignore"
+  IDS_MSG_DANGER_HINT    "这是不可撤销的操作，请再次确认"
+  IDS_MSG_DRYRUN_HINT    "演练模式：不会真正改动仓库"
+  IDS_MSG_RUNNING        "正在执行…"
+  IDS_MSG_DONE           "完成"
+  IDS_MSG_FAILED         "执行失败"
+  IDS_MSG_CANCELLED      "已取消"
+  IDS_MSG_NEED_REPO      "该命令需要先选择仓库"
+  IDS_MSG_NEED_SELECTION "该命令需要先选择文件或文件夹"
+  IDS_MSG_PREVIEW_NOTE   "菜单/面板只是命令构建器：执行的就是下面这条命令"
+  IDS_MSG_BRANCH_INVALID "分支名不合法"
+  IDS_MSG_URL_INVALID    "地址不合法"
+  IDS_MSG_REV_INVALID    "修订不合法"
+  IDS_MSG_PARAM_REQUIRED "请填写必填参数"
+  IDS_MSG_CANCELLING     "正在取消…"
+  IDS_MSG_LOG_TRUNCATED  "[日志过长，已截断]"
+  IDS_MSG_INTERNAL_NOTE  "（由 GitRT 内部处理，无需命令行）"
+  IDS_MSG_ENTRIES        "个改动"
+  IDS_MSG_DETACHED       "分离头指针"
+  IDS_MSG_UP_TO_DATE     "与上游一致"
+  IDS_MSG_COPIED         "已复制到剪贴板"
+
+  IDS_MSG_AI_EMPTY      "请先描述你想做什么"
+  IDS_MSG_AI_NO_KEY     "未配置 API Key：请设置环境变量后重启 GitRT（见下方配置说明）"
+  IDS_MSG_AI_GENERATING "正在请求 AI…"
+  IDS_MSG_AI_NONE       "AI 认为现有命令无法完成该意图"
+  IDS_MSG_AI_REJECTED   "AI 返回的方案未通过校验，已被拒绝执行"
+  IDS_MSG_AI_READY      "方案已生成，请确认后执行"
+  IDS_MSG_AI_EXECUTING  "正在执行…"
+
+  IDS_AI_LABEL_PROMPT  "用自然语言描述你要做的事"
+  IDS_AI_LABEL_PLAN    "AI 生成的方案（已通过白名单校验）"
+  IDS_AI_LABEL_RESULT  "运行结果"
+  IDS_AI_LABEL_CONFIG  "配置"
+  IDS_AI_LABEL_DETAILS "详情（AI 原始回复）"
+  IDS_AI_PROMPT_HINT   "例如：把当前所有改动提交，然后推送到 origin"
+  IDS_BTN_AI_GENERATE  "生成方案"
+  IDS_BTN_AI_EXECUTE   "执行方案"
+
+  IDS_COL_STATUS  "状态"
+  IDS_COL_FILE    "文件"
+  IDS_BTN_STAGE   "暂存"
+  IDS_BTN_UNSTAGE "取消暂存"
+  IDS_BTN_DISCARD "撤销改动"
+  IDS_BTN_DIFF    "查看差异"
+
+  IDS_SUM_STAGED     "暂存"
+  IDS_SUM_MODIFIED   "修改"
+  IDS_SUM_UNTRACKED  "未跟踪"
+  IDS_SUM_CONFLICTED "冲突"
+
+  IDS_BTN_EXECUTE        "执行"
+  IDS_BTN_CANCEL         "取消"
+  IDS_BTN_COPY           "复制命令"
+  IDS_BTN_CLOSE          "关闭"
+  IDS_BTN_CONFIRM_DANGER "确认执行（不可撤销）"
+  IDS_BTN_REFRESH        "刷新"
+  IDS_BTN_PICK_REPO      "选择仓库…"
+  IDS_BTN_OPEN_FOLDER    "打开所在文件夹"
+  IDS_BTN_CLEAR          "清空"
+
+  IDS_TITLE_MAIN      "GitRT —— 右键菜单 Git 管理器（GUI）"
+  IDS_TITLE_PROGRESS  "执行中"
+  IDS_TITLE_DIFF      "差异"
+  IDS_TITLE_DOCTOR    "自检"
+  IDS_TITLE_LOG       "提交历史"
+  IDS_TITLE_SETTINGS  "首选项"
+  IDS_TITLE_PICK_REPO "选择 Git 仓库目录"
+  IDS_TITLE_AI        "GitRT AI 助手"
+
+  IDS_LABEL_COMMAND_LINE "将执行的命令"
+  IDS_LABEL_FLAGS        "选项"
+  IDS_LABEL_REPO         "仓库"
+  IDS_LABEL_STATUS       "状态"
+  IDS_LABEL_COMMANDS     "命令"
+  IDS_LABEL_OUTPUT       "输出"
+  IDS_LABEL_BRANCH       "分支"
+  IDS_LABEL_AHEAD_BEHIND "领先/落后"
+  IDS_LABEL_NO_REPO_HINT "点击「选择仓库…」或从命令行传入一个目录"
+END
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
+STRINGTABLE
+BEGIN
+  // 与 Shell DLL 同源（shared fragments）
+#include "../core/menu_strings.en.rcinc"
+
+  IDS_MSG_READY         "Ready"
+  IDS_MSG_NO_REPO       "No repository selected"
+  IDS_MSG_GIT_NOT_FOUND "git.exe not found (searched PATH and common locations)"
+  IDS_MSG_CLEAN         "Working tree clean"
+  IDS_MSG_LOADING       "Loading status..."
+  IDS_MSG_DONE          "Done"
+  IDS_MSG_FAILED        "Failed"
+  IDS_MSG_CANCELLED     "Cancelled"
+  IDS_MSG_RUNNING       "Running..."
+  IDS_MSG_CANCELLING    "Cancelling..."
+  IDS_MSG_LOG_TRUNCATED "[log truncated]"
+  IDS_MSG_INTERNAL_NOTE "(handled internally by GitRT)"
+  IDS_MSG_ENTRIES       "change(s)"
+  IDS_MSG_DETACHED      "detached HEAD"
+  IDS_MSG_UP_TO_DATE    "up to date with upstream"
+  IDS_MSG_COPIED        "Copied to clipboard"
+
+  IDS_MSG_AI_EMPTY      "Describe what you want to do first"
+  IDS_MSG_AI_NO_KEY     "No API key configured: set the environment variable and restart GitRT"
+  IDS_MSG_AI_GENERATING "Asking the AI..."
+  IDS_MSG_AI_NONE       "The AI found no suitable command for that intent"
+  IDS_MSG_AI_REJECTED   "The AI plan failed validation and was not executed"
+  IDS_MSG_AI_READY      "Plan generated; confirm to run"
+  IDS_MSG_AI_EXECUTING  "Running..."
+
+  IDS_AI_LABEL_PROMPT  "Describe your task in natural language"
+  IDS_AI_LABEL_PLAN    "AI plan (validated against the allow-list)"
+  IDS_AI_LABEL_RESULT  "Result"
+  IDS_AI_LABEL_CONFIG  "Configuration"
+  IDS_AI_LABEL_DETAILS "Details (raw AI reply)"
+  IDS_AI_PROMPT_HINT   "e.g. commit all current changes and push to origin"
+  IDS_BTN_AI_GENERATE  "Generate plan"
+  IDS_BTN_AI_EXECUTE   "Run plan"
+
+  IDS_COL_STATUS  "Status"
+  IDS_COL_FILE    "File"
+  IDS_BTN_STAGE   "Stage"
+  IDS_BTN_UNSTAGE "Unstage"
+  IDS_BTN_DISCARD "Discard"
+  IDS_BTN_DIFF    "View diff"
+
+  IDS_SUM_STAGED     "Staged"
+  IDS_SUM_MODIFIED   "Modified"
+  IDS_SUM_UNTRACKED  "Untracked"
+  IDS_SUM_CONFLICTED "Conflicted"
+
+  IDS_BTN_EXECUTE    "Run"
+  IDS_BTN_CANCEL     "Cancel"
+  IDS_BTN_COPY       "Copy command"
+  IDS_BTN_CLOSE      "Close"
+  IDS_BTN_REFRESH    "Refresh"
+  IDS_BTN_PICK_REPO  "Pick repository..."
+  IDS_BTN_OPEN_FOLDER "Open containing folder"
+  IDS_BTN_CLEAR      "Clear"
+
+  IDS_TITLE_MAIN     "GitRT - Context-menu Git manager (GUI)"
+  IDS_TITLE_PROGRESS "Running"
+  IDS_TITLE_DIFF     "Diff"
+  IDS_TITLE_DOCTOR   "Self-check"
+  IDS_TITLE_LOG      "Commit history"
+  IDS_TITLE_SETTINGS "Preferences"
+  IDS_TITLE_PICK_REPO "Pick a Git repository folder"
+  IDS_TITLE_AI        "GitRT AI assistant"
+
+  IDS_LABEL_COMMAND_LINE "Command to run"
+  IDS_LABEL_FLAGS        "Options"
+  IDS_LABEL_REPO         "Repository"
+  IDS_LABEL_STATUS       "Status"
+  IDS_LABEL_COMMANDS     "Commands"
+  IDS_LABEL_OUTPUT       "Output"
+  IDS_LABEL_BRANCH       "Branch"
+  IDS_LABEL_AHEAD_BEHIND "Ahead/Behind"
+  IDS_LABEL_NO_REPO_HINT "Click ""Pick repository..."" or pass a directory on the command line"
+END
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEOS         VOS_NT_WINDOWS32
+FILETYPE       VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080404B0"
+    BEGIN
+      VALUE "CompanyName",      "GitRT"
+      VALUE "FileDescription",  "GitRT GUI"
+      VALUE "FileVersion",      "0.1.0.0"
+      VALUE "InternalName",     "GitRT"
+      VALUE "OriginalFilename", "GitRT.exe"
+      VALUE "ProductName",      "GitRT"
+      VALUE "LegalCopyright",   "MIT License"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0804, 1200
+  END
+END

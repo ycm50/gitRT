@@ -1,0 +1,34 @@
+Windows Registry Editor Version 5.00
+
+; ---------------------------------------------------------------------------
+; tools/dev/legacy-test-register.reg —— 传统菜单注册（《技术实现设计》§2.7 路径 A）
+;
+; 用途：把 GitRT.Shell.dll 挂到 HKCU\Software\Classes，**不需要打包/签名/开发者模式**，
+;       菜单出现在「显示更多选项」里（传统菜单）。
+; 价值：先用它确认 IExplorerCommand 实现本身是对的，再把"实现错误"与"注册/打包错误"
+;       彻底分离——现代菜单那层最容易静默失败（§3.4）。
+;
+; ★ 使用前请把下面的 DLL 路径改成你机器上的真实路径（或改用：
+;     pwsh -File tools/dev/register-legacy.ps1        # 自动算路径 + 调用 regsvr32
+;     pwsh -File tools/dev/register-legacy.ps1 -Unregister
+;   PowerShell 脚本是首选方式；本 .reg 只是不依赖 objdump/regsvr32 的备用手段。）
+; ---------------------------------------------------------------------------
+
+[HKEY_CURRENT_USER\Software\Classes\CLSID\{8E1D2F40-7C3A-4B8E-9F01-2A5C6D7E8F90}]
+@="GitRT Shell 扩展（开发期传统注册）"
+
+[HKEY_CURRENT_USER\Software\Classes\CLSID\{8E1D2F40-7C3A-4B8E-9F01-2A5C6D7E8F90}\InprocServer32]
+@="A:\\Downloads\\git-right-type\\build\\debug\\src\\shell\\GitRT.Shell.dll"
+"ThreadingModel"="Apartment"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\GitRTTest]
+"MUIVerb"="GitRT（测试）"
+"ExplorerCommandHandler"="{8E1D2F40-7C3A-4B8E-9F01-2A5C6D7E8F90}"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\GitRTTest]
+"MUIVerb"="GitRT（测试）"
+"ExplorerCommandHandler"="{8E1D2F40-7C3A-4B8E-9F01-2A5C6D7E8F90}"
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\GitRTTest]
+"MUIVerb"="GitRT（测试）"
+"ExplorerCommandHandler"="{8E1D2F40-7C3A-4B8E-9F01-2A5C6D7E8F90}"
