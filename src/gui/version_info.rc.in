@@ -1,0 +1,34 @@
+// GitRT.exe 的版本信息资源（由 CMake configure_file 从本文件生成到构建目录）
+//   ★ 版本号只有一个来源：packaging/identity.json（经 cmake/identity.cmake 导出）。
+//     这里不允许写死字面量——exe 的 FileVersion 会被 install.ps1 读出来写进注册表，
+//     和 MSIX 清单/User-Agent 分叉过一次就很难查。
+//   · 数字版本用逗号形式（identity.json 的 0.1.0.0 → 0,1,0,0）
+//   · 字符串版本保持点分形式
+#include <windows.h>
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    @GRT_ID_VERSION_COMMA@
+PRODUCTVERSION @GRT_ID_VERSION_COMMA@
+FILEOS         VOS_NT_WINDOWS32
+FILETYPE       VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080404B0"
+    BEGIN
+      VALUE "CompanyName",      "GitRT"
+      VALUE "FileDescription",  "GitRT GUI"
+      VALUE "FileVersion",      "@GRT_ID_VERSION@"
+      VALUE "InternalName",     "GitRT"
+      VALUE "OriginalFilename", "GitRT.exe"
+      VALUE "ProductName",      "GitRT"
+      VALUE "LegalCopyright",   "MIT License"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0804, 1200
+  END
+END

@@ -10,6 +10,11 @@ if(NOT EXISTS "${GRT_IDENTITY_JSON}")
   message(FATAL_ERROR "找不到 packaging/identity.json —— 它是身份与打包参数的唯一真相源")
 endif()
 
+# ★ 改了 identity.json 必须触发重新 configure：否则 AppxManifest.xml / version_info.rc /
+#   clsid_values.h 都是"上一次 configure 的产物"，改了版本号却不生效（或只有一半生效）。
+#   CMake 默认不会因为 file(READ) 过的文件变化而重跑，必须显式登记。
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GRT_IDENTITY_JSON}")
+
 file(READ "${GRT_IDENTITY_JSON}" GRT_IDENTITY_TEXT)
 
 function(grt_identity_get key out)
@@ -39,6 +44,11 @@ grt_identity_get(maxOsVersionTested    GRT_ID_MAX_OS_TESTED)
 if(NOT GRT_ID_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$")
   message(FATAL_ERROR "identity.json 的 version 必须是 4 段数字（如 0.1.0.0），当前为 '${GRT_ID_VERSION}'")
 endif()
+
+# .rc 的 FILEVERSION / PRODUCTVERSION 需要逗号形式（0,1,0,0）。
+# ★ 它和 GRT_VERSION 都从这里派生：资源里的版本号**不允许**再写字面量，
+#   否则 install.ps1 从 exe 读到的 FileVersion 会和清单/User-Agent 悄悄分叉。
+string(REPLACE "." "," GRT_ID_VERSION_COMMA "${GRT_ID_VERSION}")
 
 # ---------------------------------------------------------------- 目标架构
 # 不可写死：ARM64 宿主上 amd64 的清单会加载失败（§2.6）

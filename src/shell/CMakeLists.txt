@@ -40,7 +40,7 @@ set(GRT_RC_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/shell_strings.rc")
 set_property(SOURCE shell_strings.rc APPEND PROPERTY OBJECT_DEPENDS "${GRT_RC_DEPENDS}")
 set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/gitrt_shell.rc" APPEND PROPERTY OBJECT_DEPENDS
-             "${GRT_RC_DEPENDS};${CMAKE_CURRENT_SOURCE_DIR}/gitrt_shell.rc.in")
+             "${GRT_RC_DEPENDS};${CMAKE_CURRENT_SOURCE_DIR}/gitrt_shell.rc.in;${GRT_IDENTITY_JSON}")
 
 target_include_directories(gitrt_shell PRIVATE
   "${CMAKE_SOURCE_DIR}/src/core"

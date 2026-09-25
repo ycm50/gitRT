@@ -142,19 +142,7 @@ void UpdateConfigLabel(AiState* st) {
 void StartGenerate(HWND hwnd, AiState* st) {
     const std::wstring raw = GetText(st->promptEdit);
     const std::wstring text = Trim(raw);
-    {
-        const HWND byId = ::GetDlgItem(hwnd, IDC_AI_PROMPT);
-        wchar_t cls[64]{};
-        ::GetClassNameW(st->promptEdit, cls, 64);
-        wchar_t direct[256]{};
-        ::GetWindowTextW(st->promptEdit, direct, 256);
-        GRT_LOGI("ai", "生成方案 win=" << reinterpret_cast<void*>(hwnd) << " promptEdit="
-                                       << reinterpret_cast<void*>(st->promptEdit) << " byId="
-                                       << reinterpret_cast<void*>(byId) << " same="
-                                       << (byId == st->promptEdit ? 1 : 0) << " cls=" << U8(cls)
-                                       << " directLen=" << std::wcslen(direct) << " rawLen="
-                                       << raw.size() << " trimLen=" << text.size());
-    }
+    GRT_LOGI("ai", "生成方案 promptLen=" << text.size());
     if (text.empty()) {
         SetPlanText(st, Str(IDS_MSG_AI_EMPTY));
         return;

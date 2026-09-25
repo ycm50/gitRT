@@ -140,11 +140,14 @@ jobs:
           if (-not $env:UCRT64_BIN -or -not (Test-Path (Join-Path $env:UCRT64_BIN 'ninja.exe'))) {
             throw "UCRT64_BIN 没设好（当前='$env:UCRT64_BIN'）：「定位 UCRT64 工具链」那步失败了吗？"
           }
+          # ★ GRT_WERROR=ON：把编译器告警当错误。本项目默认 OFF（本地开发友好），
+          #   但 CI 必须当门禁——否则新告警会一直烂下去（曾经就烂过 2 条）。
           cmake --preset "ucrt64-${{ matrix.config == 'Debug' && 'debug' || 'release' }}" `
             -DCMAKE_MAKE_PROGRAM="$env:UCRT64_BIN/ninja.exe" `
             -DCMAKE_C_COMPILER="$env:UCRT64_BIN/gcc.exe" `
             -DCMAKE_CXX_COMPILER="$env:UCRT64_BIN/g++.exe" `
-            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe"
+            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe" `
+            -DGRT_WERROR=ON
           if ($LASTEXITCODE -ne 0) { throw "配置失败（exit=$LASTEXITCODE）" }
           $LASTEXITCODE = 0
 
@@ -322,7 +325,8 @@ jobs:
             -DCMAKE_MAKE_PROGRAM="$env:UCRT64_BIN/ninja.exe" `
             -DCMAKE_C_COMPILER="$env:UCRT64_BIN/gcc.exe" `
             -DCMAKE_CXX_COMPILER="$env:UCRT64_BIN/g++.exe" `
-            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe"
+            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe" `
+            -DGRT_WERROR=ON
           if ($LASTEXITCODE -ne 0) { throw "配置失败（exit=$LASTEXITCODE）" }
           $line = Select-String -Path "build/release/CMakeCache.txt" -Pattern '^GRT_OBJDUMP:' -ErrorAction SilentlyContinue
           if (-not $line -or $line.Line -match 'NOTFOUND') {

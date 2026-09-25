@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
-project(GitRT VERSION 0.1.0 LANGUAGES CXX RC)
+# 版本号不在这里写：identity.json 是唯一真相源（见 cmake/identity.cmake），
+# 下面用 GRT_ID_VERSION 派生 GRT_VERSION。原先这里另写了一份 "0.1.0"，
+# 已经和 identity.json 的 0.1.0.0 不一致——User-Agent 与"关于"对话框会跟着漂。
+project(GitRT LANGUAGES CXX RC)
 
 # 《技术实现设计》D4：MSYS2 UCRT64 (MinGW-w64) 为主工具链
 if(NOT MINGW)
@@ -27,7 +30,7 @@ configure_file(
 add_compile_definitions(
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
   _WIN32_WINNT=0x0A00 WINVER=0x0A00
-  GRT_VERSION="0.1.0")
+  GRT_VERSION="${GRT_ID_VERSION}")   # 派生自 identity.json（唯一真相源）
 
 add_compile_options(-Wall -Wextra -Wno-unknown-pragmas -Wno-unused-parameter -fno-rtti)
 

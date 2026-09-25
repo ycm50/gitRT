@@ -403,27 +403,7 @@ IDS_BTN_AI_RESET_PROMPT        "Reset to default"
   IDS_LABEL_NO_REPO_HINT "Click ""Pick repository..."" or pass a directory on the command line"
 END
 
-VS_VERSION_INFO VERSIONINFO
-FILEVERSION    0,1,0,0
-PRODUCTVERSION 0,1,0,0
-FILEOS         VOS_NT_WINDOWS32
-FILETYPE       VFT_APP
-BEGIN
-  BLOCK "StringFileInfo"
-  BEGIN
-    BLOCK "080404B0"
-    BEGIN
-      VALUE "CompanyName",      "GitRT"
-      VALUE "FileDescription",  "GitRT GUI"
-      VALUE "FileVersion",      "0.1.0.0"
-      VALUE "InternalName",     "GitRT"
-      VALUE "OriginalFilename", "GitRT.exe"
-      VALUE "ProductName",      "GitRT"
-      VALUE "LegalCopyright",   "MIT License"
-    END
-  END
-  BLOCK "VarFileInfo"
-  BEGIN
-    VALUE "Translation", 0x0804, 1200
-  END
-END
+// 版本信息资源（VS_VERSION_INFO）已移到同目录的 version_info.rc.in：
+//   exe 的 FileVersion 会被 install.ps1 读出来写进注册表，必须与 identity.json 同源，
+//   所以由 CMake configure_file 注入（见 src/gui/CMakeLists.txt）。
+//   以前这里把数字与字符串版本都写死了，改了 identity.json 也不会跟上。
