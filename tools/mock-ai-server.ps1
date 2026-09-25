@@ -9,6 +9,7 @@
 # 用法: pwsh -File tools\mock-ai-server.ps1 -Port 18080 -LogFile <path>
 # ---------------------------------------------------------------------------
 param(
+    [string]$LastBodyFile = "",
     [int]$Port = 18080,
     [string]$LogFile = "$env:TEMP\GitRT-test\mock-ai.log"
 )
@@ -48,6 +49,7 @@ try {
         $path = $req.Url.AbsolutePath
         $reader = New-Object System.IO.StreamReader($req.InputStream, [Text.Encoding]::UTF8)
         $body = $reader.ReadToEnd()
+    if ($LastBodyFile) { Set-Content -Path $LastBodyFile -Value $body -Encoding UTF8 }   # 测试要断言"系统提示词/白名单"送了什么
         $reader.Close()
 
         if ($path -eq '/health') {
@@ -65,6 +67,27 @@ try {
             $promptHit = ([regex]::Match($mu.Groups[1].Value, '(NOTJSON|UNKNOWN|NONE|COMMITALL|FORCE|MIXEDHARD|UNAUTHORIZED)')).Value
         }
         Write-Log ("$($req.HttpMethod) $path bodyLen=$($body.Length) auth=$([bool]$auth) promptHit=$promptHit")
+
+        # 模型列表（AI 设置界面「获取列表」用）：GET /v1/models 或 /models
+        if ($path -match '/models$') {
+            if (-not $auth) {
+                $bytes = [Text.Encoding]::UTF8.GetBytes('{"error":{"message":"missing api key"}}')
+                $ctx.Response.StatusCode = 401
+                $ctx.Response.ContentType = 'application/json'
+                $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                $ctx.Response.Close()
+                continue
+            }
+            $payload = '{"object":"list","data":[{"id":"mock-model","object":"model","owned_by":"gitrt"},' +
+                       '{"id":"mock-model-pro","object":"model","owned_by":"gitrt"},' +
+                       '{"id":"mock-model-mini","object":"model","owned_by":"gitrt"}]}'
+            $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
+            $ctx.Response.StatusCode = 200
+            $ctx.Response.ContentType = 'application/json'
+            $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+            $ctx.Response.Close()
+            continue
+        }
 
         if (-not $auth) {
             $payload = '{"error":{"message":"missing api key","type":"invalid_request_error","code":"401"}}'

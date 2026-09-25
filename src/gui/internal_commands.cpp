@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <fstream>
 
+#include "remote.h"   // 远端基线（提交历史里显示"以远端为基、本地新增在上"）
+
 namespace grt::gui {
 
 namespace {
@@ -136,6 +138,68 @@ std::wstring BuildDoctorReport() {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// 查看类命令的内容：**只在这里产出一份**。
+//   · 点「执行」→ 用 ShowTextWindow 打开完整内容
+//   · 选中命令后参数面板会自动调用同一个函数，把内容直接显示在面板里并定时刷新
+// ---------------------------------------------------------------------------
+bool IsViewCommand(CommandId id) {
+    return id == 1401 || id == 1402 || id == 1403;   // 提交历史 / 查看差异 / 文件历史
+}
+
+bool BuildViewText(CommandId id, const std::vector<std::wstring>& paths,
+                   const std::map<std::string, std::wstring>& flags, uint16_t* titleRes,
+                   std::wstring* body) {
+    if (!body) return false;
+    if (titleRes) *titleRes = IDS_TITLE_LOG;
+    auto on = [&](const char* key) {
+        const auto it = flags.find(key);
+        return it != flags.end() && it->second == L"1";
+    };
+    switch (id) {
+        case 1401: {   // 提交历史：先给"远端基线"的两段（本地新增在上、远端基线在下），再给提交图
+            const RemoteBaseline base = LoadRemoteBaseline(App().gitExe, App().repoRoot, 100);
+            std::wstring text = DescribeRemoteBaseline(base);
+            for (const auto& c : base.commits) {
+                text += c.localOnly ? L"【本地】 " : (c.remoteOnly ? L"【远端新增】 " : L"【远端】 ");
+                text += c.shortHash + L"  " + c.date + L"  " + c.subject + L"\r\n";
+            }
+            text += L"\r\n---- 提交图（--all --graph --decorate）----\r\n";
+            std::wstring graph = RunGitOut({L"log", L"--all", L"--graph", L"--decorate", L"--oneline",
+                                                  L"-n", L"300"});
+            if (graph.empty()) graph = Str(IDS_MSG_NO_CHANGES);
+            *body = text + graph;
+            return true;
+        }
+        case 1402: {  // 查看差异
+            std::vector<std::wstring> argv{L"diff"};
+            if (on("staged")) argv.push_back(L"--staged");
+            if (on("stat")) argv.push_back(L"--stat");
+            if (on("name-only")) argv.push_back(L"--name-only");
+            if (!paths.empty()) {
+                argv.push_back(L"--");
+                argv.insert(argv.end(), paths.begin(), paths.end());
+            }
+            *body = RunGitOut(argv);
+            if (body->empty()) *body = Str(IDS_MSG_NO_CHANGES);
+            if (paths.size() == 1) *body = paths.front() + L"\r\n\r\n" + *body;
+            if (titleRes) *titleRes = IDS_TITLE_DIFF;
+            return true;
+        }
+        case 1403: {  // 文件历史
+            if (paths.empty()) {
+                *body = Str(IDS_MSG_NEED_SELECTION);
+                return true;
+            }
+            std::vector<std::wstring> argv{L"log", L"--follow", L"--stat", L"-n", L"100", L"--"};
+            argv.insert(argv.end(), paths.begin(), paths.end());
+            *body = RunGitOut(argv);
+            return true;
+        }
+        default:
+            return false;
+    }
+}
 void ExecuteInternalCommand(HWND owner, const CommandSpec& spec, const std::vector<std::wstring>& paths,
                             const std::map<std::string, std::wstring>* flags) {
     switch (spec.id) {
@@ -148,52 +212,37 @@ void ExecuteInternalCommand(HWND owner, const CommandSpec& spec, const std::vect
         case 1004:   // app.terminal
             LaunchTerminal(owner, flags);
             return;
+        case 2109:   // history.restore —— 还原到提交
+            ShowRestoreWindow(owner);
+            return;
+        case 2110:   // remote.panel —— 远端分支与地址
+            ShowRemoteWindow(owner);
+            return;
+        case 1108: {   // commit.squash —— 合并所选提交（复选列表窗口）
+            ShowSquashWindow(owner);
+            return;
+        }
         case 1104:   // commit.ignore
             AddToGitignore(owner, paths);
             return;
-        case 1401: {  // inspect.log
-            const std::wstring body = RunGitOut({L"log", L"--all", L"--graph", L"--decorate", L"--oneline",
-                                                 L"-n", L"300"});
-            ShowTextWindow(owner, IDS_TITLE_LOG, App().repoRoot,
-                           body.empty() ? Str(IDS_MSG_NO_CHANGES) : body);
-            return;
-        }
-        case 1402: {  // inspect.diff
-            std::vector<std::wstring> argv{L"diff"};
-            auto on = [&](const char* key) {
-                return flags && flags->count(key) && flags->at(key) == L"1";
-            };
-            if (on("staged")) argv.push_back(L"--staged");
-            if (on("stat")) argv.push_back(L"--stat");
-            if (on("name-only")) argv.push_back(L"--name-only");
-            if (!paths.empty()) {
-                argv.push_back(L"--");
-                argv.insert(argv.end(), paths.begin(), paths.end());
-            }
-            std::wstring body = RunGitOut(argv);
-            if (body.empty()) body = Str(IDS_MSG_NO_CHANGES);
-            if (paths.size() == 1) body = paths.front() + L"\r\n\r\n" + body;
-            ShowTextWindow(owner, IDS_TITLE_DIFF, App().repoRoot, body);
-            return;
-        }
-        case 1403: {  // inspect.filelog
-            if (paths.empty()) {
-                ::MessageBoxW(owner, Str(IDS_MSG_NEED_SELECTION).c_str(), Str(IDS_TITLE_MAIN).c_str(),
-                              MB_OK | MB_ICONINFORMATION);
-                return;
-            }
-            std::vector<std::wstring> argv{L"log", L"--follow", L"--stat", L"-n", L"100", L"--"};
-            argv.insert(argv.end(), paths.begin(), paths.end());
-            ShowTextWindow(owner, IDS_TITLE_LOG, paths.front(), RunGitOut(argv));
+        case 1401:   // inspect.log
+        case 1402:   // inspect.diff
+        case 1403: { // inspect.filelog —— 内容与面板自动预览同源（BuildViewText）
+            uint16_t title = IDS_TITLE_LOG;
+            std::wstring body;
+            const std::map<std::string, std::wstring> emptyFlags;
+            BuildViewText(spec.id, paths, flags ? *flags : emptyFlags, &title, &body);
+            const std::wstring subtitle = (spec.id == 1403 && !paths.empty()) ? paths.front() : App().repoRoot;
+            ShowTextWindow(owner, title, subtitle, body);
             return;
         }
         case 1405:   // inspect.status：切回状态视图
             if (App().main) ::PostMessageW(App().main, WM_GRT_SHOW_STATUS, 0, 0);
             return;
         case 1701:   // app.settings
-            ShowTextWindow(owner, IDS_TITLE_SETTINGS, ConfigFilePath(),
-                           Str(IDS_MSG_NOT_IMPLEMENTED) + L"\r\n\r\n" + ConfigFilePath() +
-                               L"\r\n\r\n\u8ba1\u5212\uff1a\u8bed\u8a00/\u4e3b\u9898/\u7ec8\u7aef\u504f\u597d/\u83dc\u5355\u9879\u663e\u9690\uff08\u300a\u4ea7\u54c1\u8bbe\u8ba1\u300b\u00a74.7\uff09");
+            // 真正能用的设置界面：AI（端点/模型/Key/超时 + 测试连接）。
+            // Key 按产品决策**明文**存 exe 同目录的 GitRT.ai.json（见 settings_window.cpp 顶部说明）。
+            ShowSettingsWindow(owner);
             return;
         case 1702:   // app.doctor
             ShowTextWindow(owner, IDS_TITLE_DOCTOR, App().repoRoot, BuildDoctorReport());

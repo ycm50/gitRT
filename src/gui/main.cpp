@@ -1,7 +1,10 @@
 // GitRT.exe 入口：命令行解析 / 全局初始化 / 消息循环 / --self-test 自检
 #include "gui.h"
+#include "config.h"
 
 #include "ai_client.h"
+#include "remote.h"
+#include "restore.h"
 #include "json_util.h"
 
 #include <shellapi.h>
@@ -284,7 +287,8 @@ int RunSelfTest(HWND mainWnd, const std::wstring& outPath) {
         check(!p.ok && !p.error.empty(), L"\u975e JSON \u56de\u590d\u88ab\u62d2\u7edd");
     }
     {
-        const std::string prompt = BuildPlannerSystemPrompt([](uint16_t id) { return WideToUtf8(Str(id)); });
+        AiConfig tcfg;   // 空 systemPrompt = 用内置默认，自检"提示词含全部 key"
+        const std::string prompt = EffectiveSystemPrompt(tcfg, [](uint16_t id) { return WideToUtf8(Str(id)); });
         bool allKeys = true;
         for (size_t i = 0; i < CommandTableSize(); ++i)
             if (prompt.find(CommandTable()[i].key) == std::string::npos) { allKeys = false; break; }
@@ -334,6 +338,270 @@ int RunSelfTest(HWND mainWnd, const std::wstring& outPath) {
     check(true, L"\u4ed3\u5e93\u5ec9\u4ef7\u63a2\u6d4b\u53ef\u6267\u884c");
     }
 
+    // ---- 8b. AI 设置：Key 明文存 exe 同目录（GitRT.ai.json）的往返与优先级 ----------
+    {
+        const std::wstring path = AiKeyFilePath();
+        const bool existed = ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+        std::string backup;
+        if (existed) {
+            UniqueHandle h(::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+            if (h.get() != INVALID_HANDLE_VALUE) {
+                DWORD size = ::GetFileSize(static_cast<HANDLE>(h.get()), nullptr);
+                if (size > 0 && size < (1 << 20)) {
+                    backup.resize(size);
+                    DWORD got = 0;
+                    ::ReadFile(static_cast<HANDLE>(h.get()), backup.data(), size, &got, nullptr);
+                    backup.resize(got);
+                }
+            }
+        }
+        // 记录 config.json 里 AI 键的原值，测完还原（SaveAiConfig 会同步这几个键）
+        auto& store = ConfigStore::Instance();
+        store.Reload();
+        const std::string e0 = store.GetString("aiEndpoint"), m0 = store.GetString("aiModel");
+        const std::string k0 = store.GetString("aiApiKeyEnv");
+        const int t0 = store.GetInt("aiTimeoutMs", 60000);
+        bool roundTrip = false, keyWins = false, fileExists = false;
+        {
+            AiConfig cfg = LoadAiConfig();
+            cfg.endpoint = L"http://127.0.0.1:1/selftest";
+            cfg.model = L"selftest-model";
+            cfg.apiKey = L"sk-selftest-plain-key";
+            cfg.timeoutMs = 12345;
+            cfg.keyFilePath = path;
+            const bool saved = SaveAiConfig(cfg);
+            fileExists = ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+            const AiConfig back = LoadAiConfig();
+            roundTrip = saved && back.endpoint == cfg.endpoint && back.model == cfg.model &&
+                        back.apiKey == cfg.apiKey && back.timeoutMs == 12345 && back.keyFromFile;
+            keyWins = ResolveApiKey(back) == L"sk-selftest-plain-key";
+        }
+        check(roundTrip, L"AI \u8bbe\u7f6e\u5f80\u8fd4\uff1a\u4fdd\u5b58\u5230 " + path + L" \u540e\u80fd\u8bfb\u56de");
+        check(fileExists && keyWins,
+              L"AI Key \u5c31\u4f4d\uff1a\u6587\u4ef6\u91cc\u7684\u660e\u6587 Key \u4f18\u5148\u4e8e\u73af\u5883\u53d8\u91cf\u751f\u6548");
+        // 模型列表地址推导（AI 设置里「获取模型列表」用的 GET 地址）
+        const bool urlOk =
+            AiModelsUrlFromEndpoint(L"https://api.deepseek.com/chat/completions") ==
+                L"https://api.deepseek.com/models" &&
+            AiModelsUrlFromEndpoint(L"https://api.deepseek.com/v1/chat/completions") ==
+                L"https://api.deepseek.com/v1/models" &&
+            AiModelsUrlFromEndpoint(L"http://127.0.0.1:8080/v1/") == L"http://127.0.0.1:8080/v1/models" &&
+            AiModelsUrlFromEndpoint(L"https://api.deepseek.com") == L"https://api.deepseek.com/models" &&
+            AiModelsUrlFromEndpoint(L"").empty();
+        check(urlOk, L"\u6a21\u578b\u5217\u8868\u5730\u5740\u63a8\u5bfc\uff1a/chat/completions \u2192 /models\uff08\u542b /v1\u3001\u5c3e\u90e8\u659c\u6760\u3001\u7a7a\u503c\uff09");
+
+        // 图标一致性：右键菜单用 DLL 的 101，任务栏用 exe 的 101 —— 两张必须是同一张图
+        const HICON appIcon = GitRTAppIcon();
+        const HICON genericIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
+        check(appIcon != nullptr && appIcon != genericIcon,
+              L"GitRT.exe \u5185\u5d4c\u5e94\u7528\u56fe\u6807\uff08\u975e\u901a\u7528\u56fe\u6807\uff09");
+        if (mainWnd) {
+            const HICON wmBig = reinterpret_cast<HICON>(::SendMessageW(mainWnd, WM_GETICON, ICON_BIG, 0));
+            const HICON wmSmall = reinterpret_cast<HICON>(::SendMessageW(mainWnd, WM_GETICON, ICON_SMALL, 0));
+            check(wmBig == appIcon && wmSmall == appIcon,
+                  L"\u4e3b\u7a97\u53e3\uff08\u4efb\u52a1\u680f\uff09\u56fe\u6807 == GitRT \u56fe\u6807\uff08WM_SETICON \u5df2\u751f\u6548\uff09");
+        }
+
+        // 还原现场
+        if (existed && !backup.empty()) {
+            UniqueHandle h(::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                         FILE_ATTRIBUTE_NORMAL, nullptr));
+            if (h.get() != INVALID_HANDLE_VALUE) {
+                DWORD wrote = 0;
+                ::WriteFile(static_cast<HANDLE>(h.get()), backup.data(),
+                            static_cast<DWORD>(backup.size()), &wrote, nullptr);
+            }
+        } else {
+            ::DeleteFileW(path.c_str());
+        }
+        store.Reload();
+        store.SetString("aiEndpoint", e0);
+        store.SetString("aiModel", m0);
+        store.SetString("aiApiKeyEnv", k0);
+        store.SetInt("aiTimeoutMs", t0);
+        store.Save();
+    }
+
+    // ---- 8c. 多行文本换行：Win32 Edit 不认裸 LF --------------------------------
+    // git 输出是 LF-only；直接塞进 ES_MULTILINE 会把所有行并成一行
+    // （实机 bug：提交历史三条提交挤在一行）。所有多行文本必须过 ToCrlf/SetTextMl。
+    {
+        const bool crlfOk = ToCrlf(L"a\nb") == L"a\r\nb" &&
+                            ToCrlf(L"a\r\nb") == L"a\r\nb" &&   // 幂等
+                            ToCrlf(L"a\rb") == L"a\r\nb" &&
+                            ToCrlf(L"\n\n") == L"\r\n\r\n" &&
+                            ToCrlf(L"") == L"" && ToCrlf(L"x") == L"x";
+        check(crlfOk, L"\u6362\u884c\u5f52\u4e00\u5316\uff1aLF \u2192 CRLF\uff08Edit \u63a7\u4ef6\u4e0d\u8ba4\u88f8 LF\uff09");
+    }
+    // ---- 8d. 克隆选项（深度/单分支/分支/无标签/部分克隆）--------------------------
+    {
+        auto joinArgv = [](const std::vector<std::wstring>& v) {
+            std::wstring s;
+            for (const auto& x : v) {
+                if (!s.empty()) s += L' ';
+                s += x;
+            }
+            return s;
+        };
+        const CommandSpec* clone = FindCommandByKey("repo.clone");
+        check(clone != nullptr && clone->flagCount == 6,
+              L"\u514b\u9686\u9009\u9879\uff1a\u547d\u4ee4\u8868\u91cc\u6709 6 \u4e2a\u9009\u9879\uff08\u542b\u6df1\u5ea6\uff09");
+        BuildInput in;
+        in.spec = clone;
+        in.cwd = L"C:\\selftest";
+        in.params["url"] = L"https://example.invalid/x.git";
+        in.flags["depth"] = L"1";
+        in.flags["single-branch"] = L"1";
+        in.flags["branch"] = L"main";
+        in.flags["no-tags"] = L"1";
+        in.flags["filter"] = L"blob:none";
+        BuiltCommand b;
+        BuildError e;
+        const bool built = clone && BuildCommand(in, &b, &e);
+        const std::wstring line = built ? joinArgv(b.argvList.front()) : std::wstring();
+        check(built && line.find(L"--depth=1") != std::wstring::npos &&
+                  line.find(L"--single-branch") != std::wstring::npos &&
+                  line.find(L"--branch=main") != std::wstring::npos &&
+                  line.find(L"--no-tags") != std::wstring::npos &&
+                  line.find(L"--filter=blob:none") != std::wstring::npos,
+              L"\u514b\u9686\u9009\u9879\uff1a\u6df1\u5ea6\u7b49\u90fd\u8fdb\u4e86 argv\uff08" + line + L"\uff09");
+        // 深度必须是正整数：拦在构造期，别让用户看 git 的报错
+        BuildInput bad = in;
+        bad.flags["depth"] = L"abc";
+        BuiltCommand b2;
+        BuildError e2;
+        check(!BuildCommand(bad, &b2, &e2) && e2.message.find(L"\u6b63\u6574\u6570") != std::wstring::npos,
+              L"\u514b\u9686\u9009\u9879\uff1a\u6df1\u5ea6\u975e\u6b63\u6574\u6570\u88ab\u62e6\u4e0b\uff08" + e2.message + L"\uff09");
+    }
+    // ---- 8e. AI 直出命令的只读白名单（"方案直接输出命令"的安全边界）----
+    {
+        std::vector<std::wstring> a;
+        std::wstring why;
+        auto ro = [&](const wchar_t* line) {
+            a.clear();
+            why.clear();
+            return ParseReadOnlyGitCommand(line, &a, &why);
+        };
+        check(ro(L"git status -sb") && a.size() == 2 && a[0] == L"status",
+              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit status -sb \u653e\u884c\uff08\u62c6\u6210 argv\uff09");
+        check(ro(L"git log --oneline -5"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit log \u653e\u884c");
+        check(ro(L"git branch -a"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit branch -a \u653e\u884c");
+        check(!ro(L"git branch newbranch"),
+              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit branch newbranch \u62d2\u7edd\uff08\u5efa\u5206\u652f\u662f\u5199\u64cd\u4f5c\uff09");
+        check(ro(L"git tag -l") && !ro(L"git tag v1.0"),
+              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit tag -l \u653e\u884c\u3001git tag v1.0 \u62d2\u7edd");
+        check(!ro(L"git push origin main"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit push \u62d2\u7edd");
+        check(!ro(L"git reset --hard HEAD~1"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit reset --hard \u62d2\u7edd");
+        check(ro(L"git remote -v") && !ro(L"git remote add o u"),
+              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit remote -v \u653e\u884c\u3001remote add \u62d2\u7edd");
+        check(!ro(L"rm -rf /"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1a\u975e git \u547d\u4ee4\u62d2\u7edd");
+        check(ro(L"git config --get user.name") && !ro(L"git config user.name x"),
+              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1aconfig --get \u653e\u884c\u3001config \u5199\u5165\u62d2\u7edd");
+    }
+    // ---- 9. 执行 → 状态刷新（★ 用户可见行为）----------------------------------
+    // 点"执行"后必须看到两件事：① 真实命令行出现在执行窗口里（UI 行为，见
+    // progress_window.cpp）；② 命令改了工作区后状态跟着变。这里用临时仓库验证 ②：
+    // 真的执行 git add，再走 RefreshRepoStatus，看计数是否随之变化。
+    {
+        // 夹具放在**模块目录**下（不写用户目录）：既是工作区内可写位置，也不污染仓库
+        const std::wstring repo = GetModuleDir() + L"\\status-selftest-repo";
+        const std::wstring git = FindGitExecutable();
+        wchar_t comspec[MAX_PATH]{};
+        if (!::GetEnvironmentVariableW(L"ComSpec", comspec, MAX_PATH))
+            ::wcscpy_s(comspec, L"C:\\Windows\\System32\\cmd.exe");
+        auto rmdirRepo = [&] {
+            RunGitSync(comspec, {L"/c", L"rmdir", L"/s", L"/q", repo}, GetModuleDir(), 20000);
+        };
+        if (git.empty()) {
+            check(true, L"\u72b6\u6001\u5237\u65b0\uff1a\u672a\u627e\u5230 git.exe\uff0c\u8df3\u8fc7");
+        } else {
+            rmdirRepo();   // 从干净状态开始（保证可重复运行）
+            ::CreateDirectoryW(repo.c_str(), nullptr);
+            RunGitSync(git, {L"init", L"-q"}, repo, 30000);
+            {
+                const std::wstring f = repo + L"\\new.txt";
+                HANDLE h = ::CreateFileW(f.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+                if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
+            }
+            const std::wstring savedRepo = App().repoRoot;
+            const std::wstring savedGit = App().gitExe;
+            App().repoRoot = repo;
+            App().gitExe = git;
+            RefreshRepoStatus(nullptr);
+            const int untrackedBefore = App().status.untracked;
+            const int stagedBefore = App().status.staged;
+            // 与参数面板"执行"（进度窗口里的 WorkerProc）走同一条 git 通道
+            RunGitSync(git, {L"add", L"."}, repo, 30000);
+            const bool readAgain = RefreshRepoStatus(nullptr);
+            check(readAgain && untrackedBefore == 1 && stagedBefore == 0 &&
+                      App().status.staged == 1 && App().status.untracked == 0,
+                  L"\u6267\u884c\u540e\u72b6\u6001\u5237\u65b0\uff1a\u6682\u5b58/\u672a\u8ddf\u8e2a\u8ba1\u6570"
+                  L"\u8ddf\u7740\u547d\u4ee4\u53d8\uff08untracked " + std::to_wstring(untrackedBefore) +
+                      L"\u2192" + std::to_wstring(App().status.untracked) + L"\uff0cstaged " +
+                      std::to_wstring(stagedBefore) + L"\u2192" + std::to_wstring(App().status.staged) + L"\uff09");
+            // 远端/还原用例需要 HEAD 可解析：给自检仓库补一条提交
+            RunGitSync(git, {L"-c", L"user.email=t@e.invalid", L"-c", L"user.name=GitRT", L"commit",
+                            L"-qm", L"selftest"}, repo, 30000);
+    // ---- 8f. 远端跟踪 / 按提交还原（core 判定）----
+    {
+        // 自检用的临时仓库没有远端 → 上游读出来应当是"没有"，不是报错
+        const RemoteInfo ri = LoadRemoteInfo(App().gitExe, App().repoRoot);
+        check(ri.ok && !ri.hasUpstream && ri.ahead == 0 && ri.behind == 0,
+              L"\u8fdc\u7aef\u4fe1\u606f\uff1a\u65e0\u4e0a\u6e38\u65f6 ok=1 \u4e14 hasUpstream=0");
+        const RemoteBaseline rb = LoadRemoteBaseline(App().gitExe, App().repoRoot, 20);
+        check(rb.info.hasUpstream == ri.hasUpstream, L"\u8fdc\u7aef\u57fa\u7ebf\uff1a\u4e0e\u4e0a\u6e38\u4fe1\u606f\u4e00\u81f4");
+        check(DescribeRemoteBaseline(rb).find(L"\u672a\u8bbe\u7f6e\u4e0a\u6e38") != std::wstring::npos,
+              L"\u8fdc\u7aef\u57fa\u7ebf\uff1a\u65e0\u4e0a\u6e38\u65f6\u5982\u5b9e\u8bf4\u660e\uff08\u4e0d\u662f\u62a5\u9519\uff09");
+
+        // 远端地址/名字校验：既要拦住危险输入，也不能误杀合法写法
+        check(ValidateRemoteUrl(L"https://example.com/a.git").empty() &&
+                  ValidateRemoteUrl(L"git@github.com:u/r.git").empty() &&
+                  ValidateRemoteUrl(L"C:\\my repos\\x.git").empty(),
+              L"\u8fdc\u7aef\u5730\u5740\u6821\u9a8c\uff1ahttps/ssh/\u5e26\u7a7a\u683c\u672c\u5730\u8def\u5f84\u90fd\u653e\u884c");
+        check(!ValidateRemoteUrl(L"-bad").empty() && !ValidateRemoteUrl(L"").empty() &&
+                  !ValidateRemoteName(L"bad name").empty() && ValidateRemoteName(L"origin2").empty(),
+              L"\u8fdc\u7aef\u6821\u9a8c\uff1a\u9009\u9879\u6ce8\u5165\u4e0e\u975e\u6cd5\u540d\u5b57\u88ab\u62e6");
+        const std::vector<RemoteEntry> remotes = LoadRemotes(App().gitExe, App().repoRoot);
+        check(remotes.empty(), L"\u8fdc\u7aef\u5217\u8868\uff1a\u6ca1\u914d\u7f6e\u8fdc\u7aef\u65f6\u4e3a\u7a7a");
+
+        // 还原方式解析
+        RestoreMode m = RestoreMode::DetachCheckout;
+        check(ParseRestoreMode(L"hard", &m) && m == RestoreMode::ResetHard &&
+                  ParseRestoreMode(L"MIXED", &m) && m == RestoreMode::ResetMixed &&
+                  !ParseRestoreMode(L"nope", &m),
+              L"\u8fd8\u539f\u65b9\u5f0f\uff1ahard/mixed \u80fd\u89e3\u6790\uff0c\u672a\u77e5\u503c\u62d2\u7edd");
+        check(RestoreModeKey(RestoreMode::DetachCheckout) == L"detach" &&
+                  RestoreModeKey(RestoreMode::NewBranch) == L"branch" &&
+                  !RestoreModeLabel(RestoreMode::ResetHard).empty(),
+              L"\u8fd8\u539f\u65b9\u5f0f\uff1akey \u4e0e\u4e2d\u6587\u6807\u7b7e\u90fd\u6b63\u5e38");
+
+        // 还原计划：非法哈希 / 未知提交必须被拒；合法哈希要给出 checkout --detach
+        const RestorePlan bad1 = BuildRestorePlan(App().gitExe, App().repoRoot, L"zzz",
+                                                  RestoreMode::DetachCheckout);
+        check(!bad1.ok && bad1.error.find(L"\u4e0d\u5408\u6cd5") != std::wstring::npos,
+              L"\u8fd8\u539f\u8ba1\u5212\uff1a\u975e\u6cd5\u54c8\u5e0c\u88ab\u62d2");
+        const RestorePlan bad2 = BuildRestorePlan(App().gitExe, App().repoRoot,
+                                                  L"0123456789abcdef0123456789abcdef01234567",
+                                                  RestoreMode::DetachCheckout);
+        check(!bad2.ok, L"\u8fd8\u539f\u8ba1\u5212\uff1a\u4e0d\u5b58\u5728\u7684\u63d0\u4ea4\u88ab\u62d2");
+        const std::wstring headHash =
+            Trim(W(RunGitSync(git, {L"rev-parse", L"HEAD"}, repo, 30000).out));
+        const RestorePlan okPlan = BuildRestorePlan(App().gitExe, App().repoRoot, headHash,
+                                                    RestoreMode::DetachCheckout);
+        check(okPlan.ok && !okPlan.commandLines.empty() &&
+                  okPlan.commandLines[0].find(L"checkout --detach") != std::wstring::npos,
+              L"\u8fd8\u539f\u8ba1\u5212\uff1aHEAD \u4e0a\u7684\u53ea\u8bfb\u68c0\u51fa\u547d\u4ee4\u6b63\u786e");
+        const RestorePlan brPlan = BuildRestorePlan(App().gitExe, App().repoRoot, headHash,
+                                                    RestoreMode::NewBranch, L"");
+        check(!brPlan.ok, L"\u8fd8\u539f\u8ba1\u5212\uff1a\u65b0\u5efa\u5206\u652f\u6ca1\u7ed9\u540d\u5b57\u88ab\u62d2");
+    }
+            App().repoRoot = savedRepo;
+            App().gitExe = savedGit;
+            rmdirRepo();
+        }
+    }
+
     rep += L"\r\n== \u7ed3\u679c: " + std::to_wstring(pass) + L" \u901a\u8fc7 / " +
            std::to_wstring(fail) + L" \u5931\u8d25 ==\r\n";
     WriteReport(outPath, rep);
@@ -380,6 +648,37 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             cli.dryRun = true;
         } else if (a == L"--ai-run") {
             cli.aiRun = true;
+        } else if (a == L"--squash") {
+            cli.squashHashes = nextArg(&i);
+            cli.hasWork = true;
+        } else if (a == L"--message") {
+            cli.squashMessage = nextArg(&i);        } else if (a == L"--remote-info") {
+            cli.remoteInfoMode = L"info";
+            cli.hasWork = true;
+        } else if (a == L"--remote-fetch") {
+            cli.remoteInfoMode = L"fetch";   // --remote-info --remote-fetch = 先抓取再报
+            cli.hasWork = true;
+        } else if (a == L"--set-upstream") {
+            cli.setUpstream = nextArg(&i);
+            cli.hasWork = true;
+        } else if (a == L"--remote-add") {
+            cli.remoteAdd = nextArg(&i);
+            cli.hasWork = true;
+        } else if (a == L"--remote-set-url") {
+            cli.remoteSetUrl = nextArg(&i);
+            cli.hasWork = true;
+        } else if (a == L"--remote-remove") {
+            cli.remoteRemove = nextArg(&i);
+            cli.hasWork = true;
+        } else if (a == L"--restore") {
+            cli.restoreHash = nextArg(&i);
+            cli.hasWork = true;
+        } else if (a == L"--mode") {
+            cli.restoreMode = nextArg(&i);
+        } else if (a == L"--branch") {
+            cli.restoreBranch = nextArg(&i);
+        } else if (a == L"--force") {
+            cli.forceRestore = true;
         } else if (a == L"--list-commands") {
             cli.listCommands = true;
             cli.hasWork = true;
@@ -406,6 +705,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     if (cli.hasWork) {
         int rc = 0;
         if (cli.listCommands) rc = RunCliListCommands(cli);
+        else if (!cli.squashHashes.empty()) rc = RunCliSquash(cli);
+        else if (!cli.remoteInfoMode.empty() || !cli.setUpstream.empty() || !cli.remoteAdd.empty() ||
+                 !cli.remoteSetUrl.empty() || !cli.remoteRemove.empty()) rc = RunCliRemote(cli);
+        else if (!cli.restoreHash.empty()) rc = RunCliRestore(cli);
         else if (!cli.runKey.empty()) rc = RunCliCommand(cli);
         else rc = RunCliAi(cli);
         LogFlush();
@@ -447,6 +750,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         return 2;
     }
     ThemeApply(main);
+    // 任务栏/Alt-Tab 的图标：显式设到窗口上（与右键菜单同一张 gitrt.ico）
+    ::SendMessageW(main, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(GitRTAppIcon()));
+    ::SendMessageW(main, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(GitRTAppIcon()));
     ::ShowWindow(main, (selfTest || exitAfterRequest) ? SW_HIDE : SW_SHOW);
     ::UpdateWindow(main);
 

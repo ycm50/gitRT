@@ -27,6 +27,8 @@ enum : int {
     IDC_AI_EXEC,
     IDC_AI_COPY,
     IDC_AI_CLOSE,
+    IDC_AI_SETTINGS = 908,   // 与 shellprobe/demo 脚本里的 ID 约定保持一致
+    IDC_AI_CFG_LABEL = 909,  // 配置行（可被自动化脚本读回，用于验证 Key 状态）
 };
 
 const wchar_t* kAiWindowClass = L"GitRT.AiWindow";
@@ -41,6 +43,7 @@ struct AiState {
     HWND planLabel = nullptr, planEdit = nullptr, resultLabel = nullptr, resultEdit = nullptr;
     HWND detailsLabel = nullptr, detailsEdit = nullptr;
     HWND genBtn = nullptr, execBtn = nullptr, copyBtn = nullptr, closeBtn = nullptr;
+    HWND setBtn = nullptr;   // 「AI 设置」
     bool         busy = false;
     std::thread  worker;
     AiPlan       plan;
@@ -73,6 +76,16 @@ bool PlanIsDangerous(const AiState* st) {
 std::wstring DescribePlan(const AiState* st, const PlanToCommandResult& r) {
     std::wstring s;
     const CommandSpec* spec = r.spec ? r.spec : FindCommandByKey(st->plan.commandKey);
+    if (!st->plan.cmdline.empty()) {
+        // "方案直接输出命令"：模型给的是一条只读 git 命令
+        std::wstring t = L"\u6a21\u578b\u76f4\u63a5\u7ed9\u51fa\u7684\u53ea\u8bfb\u547d\u4ee4\uff1a";
+        t += W(st->plan.cmdline);
+        t += L"\r\n";
+        if (!st->plan.explanation.empty()) t += L"\u8bf4\u660e: " + st->plan.explanation + L"\r\n";
+        t += L"\r\n\u5373\u5c06\u6267\u884c\u7684\u547d\u4ee4\uff1a\r\n" + r.built.display;
+        for (const auto& w : r.warnings) t += L"\r\n\u63d0\u793a: " + w;
+        return t;
+    }
     s += L"\u547d\u4ee4: " + W(st->plan.commandKey);
     if (spec) s += L"  (" + Str(spec->titleRes) + L")";
     s += L"\r\n";
@@ -108,11 +121,11 @@ std::wstring DescribePlan(const AiState* st, const PlanToCommandResult& r) {
     return s;
 }
 
-void SetPlanText(AiState* st, const std::wstring& text) { SetText(st->planEdit, text); }
+void SetPlanText(AiState* st, const std::wstring& text) { SetTextMl(st->planEdit, text); }
 
 void AppendResult(AiState* st, const std::wstring& text) {
     const std::wstring cur = GetText(st->resultEdit);
-    SetText(st->resultEdit, cur.empty() ? text : (cur + L"\r\n" + text));
+    SetTextMl(st->resultEdit, cur.empty() ? text : (cur + L"\r\n" + text));
     // 滚到底部
     ::SendMessageW(st->resultEdit, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
     ::SendMessageW(st->resultEdit, EM_SCROLLCARET, 0, 0);
@@ -168,7 +181,7 @@ void StartGenerate(HWND hwnd, AiState* st) {
     auto* ctx = new Ctx();
     ctx->cfg = st->cfg;
     ctx->hwnd = hwnd;
-    ctx->sys = BuildPlannerSystemPrompt([](uint16_t id) { return WideToUtf8(Str(id)); });
+    ctx->sys = EffectiveSystemPrompt(ctx->cfg, [](uint16_t id) { return WideToUtf8(Str(id)); });
     ctx->user = BuildPlannerUserPrompt(text, App().repoRoot, W(App().status.head), {});
     GRT_LOGI("ai", "生成方案 endpoint=" << U8(ctx->cfg.endpoint) << " model=" << U8(ctx->cfg.model)
                                         << " prompt=" << U8(text) << " sysBytes=" << ctx->sys.size());
@@ -217,6 +230,7 @@ void LayoutAi(HWND hwnd, AiState* st) {
     ::MoveWindow(st->execBtn, pad + Scale(128), y, Scale(120), btnH, TRUE);
     ::MoveWindow(st->copyBtn, pad + Scale(256), y, Scale(120), btnH, TRUE);
     ::MoveWindow(st->closeBtn, pad + Scale(384), y, Scale(110), btnH, TRUE);
+    if (st->setBtn) ::MoveWindow(st->setBtn, pad + Scale(502), y, Scale(120), btnH, TRUE);
     y += btnH + Scale(10);
 
     ::MoveWindow(st->planLabel, pad, y, w, labelH, TRUE);
@@ -246,8 +260,8 @@ LRESULT CALLBACK AiProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         case WM_CREATE: {
             st->cfg = LoadAiConfig();
-            st->cfgLabel = MakeChild(hwnd, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0,
-                                     Th().fontSmall);
+            st->cfgLabel = MakeChild(hwnd, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFT, 0,
+                                     IDC_AI_CFG_LABEL, Th().fontSmall);
             st->promptLabel = MakeChild(hwnd, WC_STATICW, Str(IDS_AI_LABEL_PROMPT),
                                         WS_CHILD | WS_VISIBLE, 0, 0, Th().fontBold);
             st->hintLabel = MakeChild(hwnd, WC_STATICW, Str(IDS_AI_PROMPT_HINT),
@@ -266,6 +280,9 @@ LRESULT CALLBACK AiProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                     0, IDC_AI_COPY, Th().fontUi);
             st->closeBtn = MakeChild(hwnd, WC_BUTTONW, Str(IDS_BTN_CLOSE), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                                      0, IDC_AI_CLOSE, Th().fontUi);
+            // 直达设置：用户看到"未设置 Key"时，下一步就该点这里
+            st->setBtn = MakeChild(hwnd, WC_BUTTONW, Str(IDS_TITLE_AI_SETTINGS),
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, IDC_AI_SETTINGS, Th().fontUi);
 
             st->planLabel = MakeChild(hwnd, WC_STATICW, Str(IDS_AI_LABEL_PLAN), WS_CHILD | WS_VISIBLE, 0,
                                       0, Th().fontBold);
@@ -293,6 +310,13 @@ LRESULT CALLBACK AiProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE:
             LayoutAi(hwnd, st);
             return 0;
+        case WM_GRT_AI_CONFIG_RELOAD: {
+            // AI 设置窗口保存后：重新读配置，配置行立刻从"未设置 ✗"变成"已设置 ✓"
+            if (!st) return 0;
+            st->cfg = LoadAiConfig();
+            UpdateConfigLabel(st);
+            return 0;
+        }
         case WM_GRT_AI_DONE: {
             std::unique_ptr<AiDone> done(reinterpret_cast<AiDone*>(lp));
             if (!st || !done) return 0;
@@ -307,12 +331,12 @@ LRESULT CALLBACK AiProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SetPlanText(st, Str(IDS_MSG_AI_REJECTED) + L"\r\n\r\n" + st->plan.error +
                                     L"\r\n\r\n(HTTP " + std::to_wstring(st->plan.httpStatus) + L", " +
                                     std::to_wstring(st->plan.elapsedMs) + L" ms)");
-                SetText(st->detailsEdit, st->plan.rawReply);
+                SetTextMl(st->detailsEdit, st->plan.rawReply);
                 return 0;
             }
             if (st->plan.noCommand) {
                 SetPlanText(st, Str(IDS_MSG_AI_NONE) + L"\r\n\r\n" + st->plan.explanation);
-                SetText(st->detailsEdit, st->plan.rawReply);
+                SetTextMl(st->detailsEdit, st->plan.rawReply);
                 return 0;
             }
             const PlanToCommandResult r =
@@ -320,14 +344,14 @@ LRESULT CALLBACK AiProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!r.ok) {
                 SetPlanText(st, Str(IDS_MSG_AI_REJECTED) + L"\r\n\r\n" + r.error + L"\r\n\r\n" +
                                     L"\u6a21\u578b\u8fd4\u56de: " + W(st->plan.commandKey));
-                SetText(st->detailsEdit, st->plan.rawReply);
+                SetTextMl(st->detailsEdit, st->plan.rawReply);
                 return 0;
             }
             st->hasPlan = true;
             st->spec = r.spec;
             st->built = r.built;
             SetPlanText(st, Str(IDS_MSG_AI_READY) + L"\r\n\r\n" + DescribePlan(st, r));
-            SetText(st->detailsEdit, st->plan.rawReply);
+            SetTextMl(st->detailsEdit, st->plan.rawReply);
             ::EnableWindow(st->execBtn, TRUE);
             GRT_LOGI("ai", "方案已生成 command=" << st->plan.commandKey
                                                  << " argv=" << U8(r.built.display));
@@ -359,6 +383,10 @@ LRESULT CALLBACK AiProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDCANCEL:
                     if (st->busy) return 0;   // 请求中不允许关闭（避免线程悬空）
                     ::DestroyWindow(hwnd);
+                    return 0;
+                case IDC_AI_SETTINGS:
+                    // 打开 AI 设置；保存后本窗口会收到 WM_GRT_AI_CONFIG_RELOAD 并刷新配置行
+                    ShowSettingsWindow(hwnd, hwnd);
                     return 0;
                 default:
                     break;
@@ -406,6 +434,8 @@ void EnsureAiClass() {
     wc.lpfnWndProc = AiProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = GitRTAppIcon();
+    wc.hIconSm = GitRTAppIcon();
     wc.lpszClassName = kAiWindowClass;
     ::RegisterClassExW(&wc);
     done = true;

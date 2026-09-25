@@ -28,6 +28,10 @@ struct AppState {
     std::wstring lastError;
     UINT         dpi = 96;
     HWND         main = nullptr;
+    HWND         squash = nullptr;   // 合并提交窗口（单例）
+    HWND         restore = nullptr;  // 还原到提交窗口（单例）
+    HWND         remote = nullptr;   // 远端分支与地址窗口（单例）
+    bool         autoFetchBusy = false;   // 自动抓取进行中（防重入）
 };
 AppState& App();
 
@@ -56,6 +60,9 @@ const std::wstring& Str(UINT id);
 HWND MakeChild(HWND parent, const wchar_t* cls, const std::wstring& text, DWORD style,
                DWORD exStyle, int id, HFONT font);
 void SetText(HWND h, const std::wstring& s);
+// 多行文本：Win32 Edit 不认裸 LF，必须转 CRLF（见 ui_util.cpp 注释）
+std::wstring ToCrlf(std::wstring s);
+void SetTextMl(HWND h, const std::wstring& s);
 std::wstring GetText(HWND h);
 void CenterOnOwner(HWND hwnd, HWND owner);
 void SubclassDarkEdit(HWND edit);
@@ -81,8 +88,42 @@ void ShowTextWindow(HWND owner, UINT titleRes, const std::wstring& subtitle, con
 // AI 助手窗口（自然语言 → 命令方案 → 执行 → 显示结果）
 void ShowAiWindow(HWND owner);
 
+// GitRT 应用图标：exe 内嵌的 IDI_GRT_APP —— 与右键菜单里的图标是**同一张 .ico**
+// （packaging/Assets/gitrt.ico 同时打进 GitRT.Shell.dll 与 GitRT.exe）。
+// 加载失败时退回通用图标，绝不返回空（空会让任务栏用别的图标）。
+HICON GitRTAppIcon();
+
+// AI 设置窗口（首选项）：端点/模型/Key/超时 + 测试连接；
+// Key 明文存 exe 同目录的 GitRT.ai.json（产品决策 2026-09-24）。
+// notify：保存/关闭后接收 WM_GRT_AI_CONFIG_RELOAD，用来刷新区里的配置显示（AI 窗口用）
+void ShowSettingsWindow(HWND owner, HWND notify = nullptr);
+// 查看类命令（提交历史 / 查看差异 / 文件历史）：内容只在 core 里产出一份，
+// 文本窗口与参数面板的"自动显示"共用（见 internal_commands.cpp）
+bool IsViewCommand(CommandId id);
+bool BuildViewText(CommandId id, const std::vector<std::wstring>& paths,
+                   const std::map<std::string, std::wstring>& flags, uint16_t* titleRes, std::wstring* body);
+void ShowSquashWindow(HWND owner);   // 合并提交：复选连续的提交 → 合并成一条
+void ShowRestoreWindow(HWND owner);  // 还原到提交：只读检出 / 新建分支 / 重置
+void ShowRemoteWindow(HWND owner);   // 远端分支与地址：抓取 / 检出 / 跟踪 / 设上游 / 改地址
+// AI 配置变化通知（ShowSettingsWindow 的 notify 会收到）
+constexpr UINT WM_GRT_AI_CONFIG_RELOAD = WM_APP + 65;
+    // 合并提交完成（lParam = new SquashResult，接收方负责 delete）
+    constexpr UINT WM_GRT_SQ_DONE = WM_APP + 71;
+    // 参数面板里的"查看类命令自动预览"：工作线程算好内容 → lParam = new std::wstring（接收方 delete）
+    constexpr UINT WM_GRT_PANEL_PREVIEW = WM_APP + 72;
+    // 还原窗口/远端窗口：工作线程完成 → lParam = new RestoreResult / 空
+    constexpr UINT WM_GRT_RST_DONE = WM_APP + 73;
+    constexpr UINT WM_GRT_RM_DONE = WM_APP + 74;
+    constexpr UINT WM_GRT_AUTOFETCH_DONE = WM_APP + 75;   // lParam = new std::wstring(错误，空=成功)
+
 // 进度窗口：顺序执行 BuiltCommand 的多条命令，支持取消
 void RunBuiltCommand(HWND owner, const CommandSpec& spec, const BuiltCommand& cmd);
+
+// 在 target 窗口上**就地**执行 BuiltCommand（不建进度窗口）：
+// 把 "> git …"、输出、进度、结束都投给 target 的 WM_GRT_TASK_LOG / PROGRESS / DONE。
+// 参数面板的"运行结果"框用它；进度窗口仍走 RunBuiltCommand。
+void RunBuiltCommandOn(HWND target, const CommandSpec& spec, const BuiltCommand& cmd,
+                       std::shared_ptr<CancellationToken> cancel);
 
 // 参数面板（子窗口，返回 HWND）
 HWND CreateParamPanel(HWND parent, const CommandSpec& spec, const std::vector<std::wstring>& paths);
@@ -129,11 +170,26 @@ struct CliOptions {
     bool         dryRun = false;   // --dry-run（只构造 argv，不执行）
     bool         aiRun = false;    // --ai-run（AI 方案也执行）
     bool         listCommands = false;  // --list-commands（导出命令表，供测试/CI）
+    std::wstring squashHashes;    // --squash "h1,h2,h3"（合并连续提交）
+    std::wstring squashMessage;   // --message "合并后的提交信息"（可省，默认拼 subject）
+    // ---- 远端跟踪 / 按提交还原（脚本化入口）
+    std::wstring remoteInfoMode;  // --remote-info（空 = 不跑；可给 "fetch" 表示先抓取）
+    std::wstring restoreHash;     // --restore <hash>
+    std::wstring restoreMode;     // --mode detach|branch|soft|mixed|hard（默认 detach）
+    std::wstring restoreBranch;   // --branch <名字>（仅 mode=branch）
+    std::wstring setUpstream;     // --set-upstream origin/main
+    std::wstring remoteAdd;       // --remote-add name=url
+    std::wstring remoteSetUrl;    // --remote-set-url name=url
+    std::wstring remoteRemove;    // --remote-remove name
+    bool         forceRestore = false;   // --force（脏工作区也允许 hard 重置）
     bool         hasWork = false;  // 是否走 CLI 分支（不建窗口）
 };
 int RunCliCommand(const CliOptions& o);
 int RunCliAi(const CliOptions& o);
 int RunCliListCommands(const CliOptions& o);
+int RunCliSquash(const CliOptions& o);   // --squash：脚本化的"合并连续提交"
+int RunCliRemote(const CliOptions& o);   // --remote-info/--set-upstream：远端基线与上游
+int RunCliRestore(const CliOptions& o);  // --restore：按提交还原（检出/新建分支/重置）
 
 }  // namespace grt::gui
 
@@ -147,6 +203,16 @@ int RunCliListCommands(const CliOptions& o);
 #define WM_GRT_AI_PLAN_READY (WM_APP + 18)  // AI 方案已校验，可由窗口执行
 
 // 命令执行结束的汇总（进度窗口 → 宿主窗口；接收方负责 delete）
+// 一条 BuiltCommand 跑完后的汇总（进度窗口与参数面板的"运行结果"框共用）
+struct TaskOutcome {
+    bool         ok = false;
+    bool         cancelled = false;
+    int          exitCode = 0;
+    uint64_t     ms = 0;
+    std::wstring failedCommand;
+    std::string  err;
+    std::string  out;      // 合并输出（供宿主窗口显示"运行结果"）
+};
 struct TaskSummary {
     bool         ok = false;
     bool         cancelled = false;

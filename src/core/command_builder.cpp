@@ -174,6 +174,55 @@ std::vector<std::wstring> ExpandFlags(const CommandSpec& spec,
     return out;
 }
 
+// 值型 flag 的白名单式校验（目前只针对 clone 选项；要加别的命令往这里补规则）
+bool ValidateFlagValues(const CommandSpec& spec, const std::map<std::string, std::wstring>& flags,
+                        BuildError* err) {
+    if (!spec.flags) return true;
+    for (uint8_t i = 0; i < spec.flagCount; ++i) {
+        const FlagSpec& f = spec.flags[i];
+        if (f.kind != FlagKind::Value) continue;
+        const std::wstring v = FlagValue(flags, f);
+        if (v.empty()) continue;
+        const std::string key = f.key ? f.key : "";
+        if (key == "depth") {
+            // 浅克隆深度：正整数（git 也接受 --depth=<n>），上限给个常识值
+            bool ok = !v.empty() && v.size() <= 7;
+            for (const wchar_t c : v) {
+                if (c < L'0' || c > L'9') ok = false;
+            }
+            if (ok && v.find_first_not_of(L'0') == std::wstring::npos) ok = false;   // 全 0
+            if (!ok) {
+                err->code = 5;
+                err->field = f.key;
+                err->message = L"浅克隆深度要是正整数（例如 1），当前输入：" + v;
+                return false;
+            }
+        } else if (key == "branch") {
+            if (!IsValidBranchName(v)) {
+                err->code = 5;
+                err->field = f.key;
+                err->message = L"分支名不合法：" + v;
+                return false;
+            }
+        } else if (key == "filter") {
+            // 形如 blob:none / tree:0 / blob:limit=1m——只允许字母数字与 : , = + - . /
+            bool ok = true;
+            for (const wchar_t c : v) {
+                const bool good = (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') ||
+                                  (c >= L'0' && c <= L'9') || c == L':' || c == L',' || c == L'=' ||
+                                  c == L'+' || c == L'-' || c == L'.' || c == L'/';
+                if (!good) ok = false;
+            }
+            if (!ok) {
+                err->code = 5;
+                err->field = f.key;
+                err->message = L"--filter 只允许字母数字与 : , = + - . / （例如 blob:none）：" + v;
+                return false;
+            }
+        }
+    }
+    return true;
+}
 bool ParamRequired(const CommandSpec& spec) {
     return spec.param != ParamKind::None && spec.param != ParamKind::Pattern;
 }
@@ -313,7 +362,8 @@ bool BuildCommand(const BuildInput& in, BuiltCommand* out, BuildError* err) {
     }
 
     // ---- 模板展开（按 " ; " 分段 → 多条命令）----
-    const std::vector<std::wstring> flagsArgv = ExpandFlags(spec, in.flags, err);
+    // ---- 值型 flag 的轻校验：宁可在这里拦下，也不要让用户看到 git 那句难懂的报错 ----
+    if (!ValidateFlagValues(spec, in.flags, err)) return false;    const std::vector<std::wstring> flagsArgv = ExpandFlags(spec, in.flags, err);
     const std::wstring tmpl = W(spec.argvTemplate ? spec.argvTemplate : "");
 
     std::vector<std::wstring> segments;

@@ -1,0 +1,60 @@
+GitRT —— 安装与使用说明
+========================================================================
+
+一、这是什么
+    在资源管理器里右键就能用的 Git 小工具（Win32 原生界面，无外部运行时）。
+
+二、安装（30 秒）
+    1) 把整个 zip 解压到一个目录，例如：
+           A:\Downloads\GitRT-0.1.0.0-win-x64\
+    2) 在**解压出来的这个目录里**打开 PowerShell 7（pwsh），运行：
+           pwsh -File install.ps1
+
+       安装位置由"你运行 install.ps1 时所在的目录"决定（取该目录的盘符根 + gitRT）：
+           在 A:\Downloads\GitRT-0.1.0.0-win-x64\ 里运行  ->  装到 A:\gitRT\
+           在 C:\Users\你\Downloads\GitRT-...\ 里运行     ->  装到 C:\gitRT\
+           （系统盘根目录通常需要"以管理员身份"的 PowerShell）
+       也可以在别处运行并指定安装目录：
+           pwsh -File "<解压目录>\install.ps1" -InstallDir D:\tools\GitRT
+
+       安装脚本会：停掉正在运行的 GitRT -> 把 app\ 里的三个程序释放到 <盘根>\gitRT
+       -> 写注册表 HKCU\Software\GitRT（记录安装目录 / 版本 / 卸载命令）
+       -> **注册资源管理器右键菜单**（免签名"稀疏身份包"，需要系统"开发者模式"）
+       -> 重启资源管理器 -> 跑一次自检确认能启动。
+
+       装完在任意文件夹/文件上右键就能看到「GitRT」。若没看到：
+         ① 确认已开启"开发者模式"（设置 → 系统 → 开发者选项 → 开发人员模式）
+         ② 手动重启一次资源管理器（任务管理器 → 重启"Windows 资源管理器"）
+         ③ Win11 的新版右键菜单里可能需要点"显示更多选项"
+
+       可选：
+           只要程序、不要右键菜单：   pwsh -File install.ps1 -WithShellMenu:$false   （-NoShellMenu 等价）
+           只想看会做什么、不真装：   pwsh -File install.ps1 -DryRun
+
+三、运行
+    · 双击 <安装目录>\GitRT.exe 启动；装了右键菜单的话，在任意文件夹/文件上右键 ->「GitRT」
+    · 首次使用：在界面里选「仓库」目录，然后从左侧命令列表挑命令
+    · AI 功能：进「首选项」填接口地址 / Key / 模型
+      （Key 以明文保存在 <安装目录>\GitRT.ai.json，属于你自己的机器，别把它拷给别人）
+
+四、卸载
+    pwsh -File "<安装目录>\uninstall.ps1"        (也可以用解压目录里的 uninstall.ps1)
+    会依次：把明文 AI 设置备份到 %APPDATA%\GitRT\uninstall-backup-<时间>\
+            （下次安装会自动恢复）-> 停掉 GitRT -> 删除 <安装目录>
+            -> 清掉注册表 HKCU\Software\GitRT ->（若注册过）注销右键菜单
+    只想看会删什么：
+        pwsh -File uninstall.ps1 -DryRun
+
+五、常见问题
+    · 装到系统盘根目录失败：改用管理员 PowerShell，或用 -InstallDir 换到别的盘/目录
+    · 右键菜单没出现：① 确认已开启"开发者模式"；② 重启资源管理器；③ 重跑 pwsh -File install.ps1（默认就注册）
+    · 提示文件被占用、目录删不掉：先关掉 GitRT 和资源管理器窗口，再跑一次 uninstall.ps1
+    · 想确认安装到哪：注册表 HKCU\Software\GitRT 的 InstallDir，或看 install.ps1 的输出
+
+六、这个目录里都有什么
+    install.ps1 / uninstall.ps1   安装、卸载脚本（默认连右键菜单一起装）
+    app\                          GitRT.exe、GitRT.Shell.dll、GitRT.ShellProbe.exe
+    package\                      右键菜单用的稀疏包清单与图标（注册菜单时用）
+    README.md                     项目说明（功能、构建、测试）
+    LICENSE / THIRD-PARTY-NOTICES.md
+    版本信息.txt                  版本、构建时间、git 提交、程序 sha256（报问题时附上）

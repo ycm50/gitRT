@@ -109,6 +109,21 @@ void ThemeInit(HWND sampleWnd) {
                                CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
 }
 
+// ================================================================== 应用图标
+// 与右键菜单同一张图：packaging/Assets/gitrt.ico 既打进 GitRT.Shell.dll（右键项用
+// ",-101"），也打进 GitRT.exe（资源 101）—— 一致性由构建保证，不靠手工同步。
+HICON GitRTAppIcon() {
+    static HICON cached = nullptr;
+    if (!cached) {
+        cached = static_cast<HICON>(::LoadImageW(::GetModuleHandleW(nullptr),
+                                                 MAKEINTRESOURCEW(IDI_GRT_APP), IMAGE_ICON, 0, 0,
+                                                 LR_DEFAULTSIZE | LR_SHARED));
+        if (!cached) cached = ::LoadIconW(nullptr, IDI_APPLICATION);
+        GRT_LOGI("gui", "应用图标加载 " << (cached ? "OK" : "失败"));
+    }
+    return cached;
+}
+
 void ThemeApply(HWND hwnd) {
     Theme& t = Th();
     BOOL dark = t.dark ? TRUE : FALSE;
@@ -169,6 +184,28 @@ HWND MakeChild(HWND parent, const wchar_t* cls, const std::wstring& text, DWORD 
 }
 
 void SetText(HWND h, const std::wstring& s) { if (h) ::SetWindowTextW(h, s.c_str()); }
+
+// 多行文本必须喂 CRLF：Win32 的 ES_MULTILINE Edit **不认裸 LF**（\n 直接当没有换行），
+// 于是 git 的 LF-only 输出（提交历史/差异/文件历史/进度日志）会被并成一行 —— 实机 bug。
+// 规则：把裸 \n 和裸 \r 都补成 \r\n，已是 \r\n 的原样保留（幂等）。
+std::wstring ToCrlf(std::wstring s) {
+    std::wstring out;
+    out.reserve(s.size() + 16);
+    for (size_t i = 0; i < s.size(); ++i) {
+        const wchar_t c = s[i];
+        if (c == L'\r') {
+            out += L"\r\n";
+            if (i + 1 < s.size() && s[i + 1] == L'\n') ++i;   // 已有 \r\n → 跳过 \n
+        } else if (c == L'\n') {
+            out += L"\r\n";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+void SetTextMl(HWND h, const std::wstring& s) { if (h) SetText(h, ToCrlf(s)); }
 
 std::wstring GetText(HWND h) {
     if (!h) return {};

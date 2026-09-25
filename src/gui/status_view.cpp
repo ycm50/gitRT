@@ -63,13 +63,17 @@ void RefreshList(HWND hwnd, SvState* st) {
     if (branch.empty()) branch = app.status.detached ? Str(IDS_MSG_DETACHED) : L"-";
     SetText(st->branchVal, branch);
 
+    // 领先/落后：带上游名（"origin/main  +2 / -1"），没设上游就如实说
     std::wstring ab;
     if (app.status.upstream.empty()) {
-        ab = L"-";
-    } else if (app.status.ahead == 0 && app.status.behind == 0) {
-        ab = Str(IDS_MSG_UP_TO_DATE);
+        ab = Str(IDS_MSG_NO_UPSTREAM);
     } else {
-        ab = L"+" + std::to_wstring(app.status.ahead) + L" / -" + std::to_wstring(app.status.behind);
+        ab = W(app.status.upstream) + L"   ";
+        if (app.status.ahead == 0 && app.status.behind == 0) {
+            ab += Str(IDS_MSG_UP_TO_DATE);
+        } else {
+            ab += L"+" + std::to_wstring(app.status.ahead) + L" / -" + std::to_wstring(app.status.behind);
+        }
     }
     SetText(st->abVal, ab);
 

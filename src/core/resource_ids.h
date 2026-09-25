@@ -29,6 +29,7 @@
 #define IDS_CMD_COMMIT_COMMIT      2105
 #define IDS_CMD_COMMIT_AMEND       2106
 #define IDS_CMD_COMMIT_UNDO        2107
+#define IDS_CMD_COMMIT_SQUASH      2108
 #define IDS_CMD_SYNC_PULL          2201
 #define IDS_CMD_SYNC_PUSH          2202
 #define IDS_CMD_SYNC_FETCH         2203
@@ -84,6 +85,12 @@
 #define IDS_FLAG_AGGRESSIVE        3030
 #define IDS_FLAG_BRANCH_VALUE      3031
 #define IDS_FLAG_TRACK_VALUE       3032
+// ---- 克隆选项（§4.2b 后续补充：深度等）
+#define IDS_FLAG_CLONE_DEPTH       3033   // 浅克隆深度 --depth=<n>
+#define IDS_FLAG_CLONE_SINGLE      3034   // 只克隆单分支 --single-branch
+#define IDS_FLAG_CLONE_BRANCH      3035   // 指定分支 --branch=<name>
+#define IDS_FLAG_CLONE_NO_TAGS     3036   // 不拉取标签 --no-tags
+#define IDS_FLAG_CLONE_FILTER      3037   // 部分克隆 --filter=<spec>
 #define IDS_TERM_GIT_BASH          3040
 #define IDS_TERM_POWERSHELL        3041
 #define IDS_TERM_WT                3042
@@ -154,6 +161,7 @@
 #define IDS_BTN_PICK_REPO          5006
 #define IDS_BTN_OPEN_FOLDER        5007
 #define IDS_BTN_CLEAR              5008
+#define IDS_BTN_SQ_MERGE           5009   // 合并所选提交
 
 // ------------------------------------------------------------- 窗口标题
 #define IDS_TITLE_MAIN             5100
@@ -181,6 +189,116 @@
 #define IDS_MSG_AI_REJECTED    4104
 #define IDS_MSG_AI_READY       4105
 #define IDS_MSG_AI_EXECUTING   4106
+// AI 设置对话框（首选项，2026-09-24：Key 明文存 exe 同目录的 GitRT.ai.json）
+// ---- 合并提交（squash）窗口
+#define IDS_TITLE_SQUASH        5122
+#define IDS_SQ_COL_SUBJECT      5310
+#define IDS_SQ_COL_HASH         5311
+#define IDS_SQ_COL_DATE         5312
+#define IDS_SQ_COL_AUTHOR       5313
+#define IDS_SQ_LABEL_MSG        5314
+#define IDS_SQ_LABEL_LOG        5315
+#define IDS_SQ_SEL_NONE         5316
+#define IDS_SQ_SEL_OK           5317   // 已选 N 条：连续
+#define IDS_SQ_SEL_GAP          5318
+#define IDS_SQ_SEL_MERGE        5319
+#define IDS_SQ_CONFIRM_TITLE    5320
+#define IDS_SQ_CONFIRM_BODY     5321
+#define IDS_SQ_DONE             5322
+#define IDS_SQ_RUNNING          5323
+#define IDS_SQ_FAILED           5324
+#define IDS_SQ_NEED2            5325
+#define IDS_SQ_NO_COMMITS       5326
+// ---- 查看类命令的"自动显示"预览（提交历史/查看差异/文件历史）
+#define IDS_LABEL_CONTENT       5327   // 内容（自动刷新）
+#define IDS_MSG_PREVIEW_FOOTER  5328
+#define IDS_LABEL_RUN_OUTPUT    5329
+// ---- AI 系统提示词（首选项里可改）
+#define IDS_AI_SET_LABEL_SYSPROMPT     5330
+#define IDS_AI_SET_PROMPT_DEFAULT_HINT 5331
+#define IDS_BTN_AI_RESET_PROMPT        5332
+// ---- 自动抓取（首选项里的"持续跟踪"）
+#define IDS_AI_SET_LABEL_AUTOFETCH     5334
+#define IDS_AI_SET_AUTOFETCH_HINT      5335
+
+// ---- 还原到提交（history.restore）
+#define IDS_CMD_HISTORY_RESTORE  2109
+#define IDS_TITLE_RESTORE        5600
+#define IDS_RST_LABEL_MODE       5601
+#define IDS_RST_MODE_DETACH      5602
+#define IDS_RST_MODE_BRANCH      5603
+#define IDS_RST_MODE_SOFT        5604
+#define IDS_RST_MODE_MIXED       5605
+#define IDS_RST_MODE_HARD        5606
+#define IDS_RST_LBL_BRANCH       5607
+#define IDS_RST_LBL_COMMITS      5608
+#define IDS_RST_LBL_LOG          5609
+#define IDS_BTN_RST_DO           5610
+#define IDS_BTN_RST_REFRESH      5611
+#define IDS_RST_SEL_NONE         5612
+#define IDS_RST_SEL_OK           5613
+#define IDS_RST_CONFIRM_TITLE    5614
+#define IDS_RST_CONFIRM_BODY     5615
+#define IDS_RST_HARD_TITLE       5616
+#define IDS_RST_HARD_BODY        5617
+#define IDS_RST_RUNNING          5618
+#define IDS_RST_DONE             5619
+#define IDS_RST_FAILED           5620
+#define IDS_RST_NEED_COMMIT      5621
+#define IDS_RST_NO_COMMITS       5622
+
+// ---- 远端分支与远端地址（remote.panel）
+#define IDS_CMD_REMOTE_PANEL     2110
+#define IDS_TITLE_REMOTE         5630
+#define IDS_RM_LBL_BRANCHES      5631
+#define IDS_RM_LBL_REMOTES       5632
+#define IDS_RM_LBL_NAME          5633
+#define IDS_RM_LBL_URL           5634
+#define IDS_RM_LBL_LOG           5635
+#define IDS_BTN_RM_FETCH         5636
+#define IDS_BTN_RM_CHECKOUT      5637
+#define IDS_BTN_RM_TRACK         5638
+#define IDS_BTN_RM_UPSTREAM      5639
+#define IDS_BTN_RM_SAVE_URL      5640
+#define IDS_BTN_RM_ADD_REMOTE    5641
+#define IDS_RM_SEL_NONE          5642
+#define IDS_RM_SEL_OK            5643
+#define IDS_RM_RUNNING           5644
+#define IDS_RM_DONE              5645
+#define IDS_RM_FAILED            5646
+#define IDS_RM_NEED_BRANCH       5647
+#define IDS_RM_NO_BRANCHES       5648
+#define IDS_RM_URL_OK            5649
+#define IDS_RM_ADD_OK            5650
+#define IDS_RM_CONFIRM_TRACK     5651
+#define IDS_RM_CONFIRM_TITLE     5652
+#define IDS_CMD_SYNC_FETCH_ALL   2111
+#define IDS_MSG_NO_UPSTREAM      5653   // 未设置上游
+#define IDS_BTN_SV_FETCH         5654   // 状态视图里的「抓取」   // 运行结果（执行时在面板里就地显示）   // …（只显示前 N 行，点「执行」看完整内容）
+
+#define IDS_BTN_AI_SAVE        5512
+#define IDS_BTN_AI_TEST        5513
+#define IDS_BTN_AI_MODELS      5514
+#define IDS_AI_SET_LABEL_ENDPOINT 5520
+#define IDS_AI_SET_LABEL_MODEL    5521
+#define IDS_AI_SET_LABEL_KEY      5522
+#define IDS_AI_SET_LABEL_TIMEOUT  5523
+#define IDS_AI_SET_LABEL_STORE    5524
+#define IDS_AI_SET_HINT_KEY       5525
+#define IDS_MSG_AI_SAVED       4107
+#define IDS_MSG_AI_SAVE_FAILED 4108
+#define IDS_MSG_AI_TESTING     4109
+#define IDS_MSG_AI_TEST_OK     4110
+#define IDS_MSG_AI_TEST_FAIL   4111
+#define IDS_MSG_AI_KEY_FROM_FILE 4112
+#define IDS_MSG_AI_KEY_FROM_ENV  4113
+#define IDS_MSG_AI_KEY_NONE2     4114
+#define IDS_MSG_AI_STORE_READONLY 4115
+#define IDS_MSG_AI_MODELS_OK      4116
+#define IDS_MSG_AI_MODELS_FAIL    4117
+#define IDS_MSG_AI_MODELS_LOADING 4118
+#define IDS_MSG_AI_MODELS_EMPTY   4119
+#define IDS_TITLE_AI_SETTINGS  5121
 
 // ------------------------------------------------ 右键菜单（Shell DLL，§4.1）
 #define IDS_MENU_ROOT              6100
@@ -197,6 +315,11 @@
 #define IDS_TIP_NEED_SELECTION     6154
 #define IDS_TIP_INTERNAL           6155
 #define IDS_TIP_ROOT_APP           6156   // App 形态（单一入口）：入口即"打开 GitRT"
+
+// ------------------------------------------------- 图标（GUI 与 Shell 共用同一对 .ico）
+//   exe / dll 各自内嵌同一份图片，右键菜单用 ",-101"，任务栏用 exe 的资源 101
+#define IDI_GRT_APP    101
+#define IDI_GRT_WARN   102
 
 // ------------------------------------------------- 菜单请求转发（§4.5/§5.4）
 #define IDS_MSG_REQ_MISSING        4031

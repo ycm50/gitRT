@@ -1,22 +1,101 @@
-# 构建产物
+# ---------------------------------------------------------------------------
+# GitRT 忽略规则
+#   · 构建产物：全部在 build/ 下（debug / release / probe 三个预设都指向这里）
+#   · ★ 凭据：GitRT.ai.json 里是**明文 API Key**，绝不入库
+#   · 开发期签名/打包产物：*.pfx / *.msix 等（见《技术实现设计》§11）
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------- 构建目录
 build/
+out/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+arm64/
+
+# ------------------------------------------------------------ CMake / Ninja
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+*.ninja
+.ninja_deps
+.ninja_log
+.ninja_log.*
+Testing/
+
+# ---------------------------------------------------------------- 编译产物
 *.o
 *.obj
 *.a
+*.lib
+*.lo
+*.la
 *.exe
 *.dll
+*.so
+*.dylib
+*.exp
+*.ilk
 *.pdb
+*.idb
+*.res
+*.so.*
 
-# 开发期自签名与打包产物（见《技术实现设计》§11）
+# ------------------------------------------------- 开发期签名 / 打包产物
+#   （见《技术实现设计》§11：免签名 loose 注册不需要这些文件）
 *.pfx
 *.cer
+*.pvk
+*.snk
 *.msix
+*.msixbundle
+*.msixupload
 *.appx
+*.appxbundle
+*.appxupload
+packaging/out/
+packaging/*_Layout/
 
-# 编辑器 / 系统
+# ★ 凭据：AI Key 明文文件（exe 同目录）。任何情况下都不要提交
+GitRT.ai.json
+*.ai.json
+*.pem
+*.key
+.env
+.env.*
+
+# ------------------------------------------------------------ 运行期产物
+*.log
+logs/
+selftest-*.txt
+status-selftest-repo/
+shellprobe-tmp/
+*.trace
+*.etl
+*.dmp
+
+# ---------------------------------------------------------- 编辑器 / 系统
 .vs/
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+*.user
+*.suo
+*.VC.db
 Thumbs.db
 desktop.ini
-*.swp
+.DS_Store
+
+# ------------------------------------------------------------------ 其他
+*.tmp
+*.bak
+*.orig
+*.rej
+tmp/

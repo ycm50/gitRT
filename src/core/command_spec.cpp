@@ -113,7 +113,14 @@ constexpr FlagSpec kInitFlags[] = {
 };
 
 // repo.clone
+// 克隆选项：顺序即 argv 顺序（表内声明顺序 = 稳定输出）
+//   depth / branch / filter 是「值型」——用 --opt={v} 形式，保证是**一个** argv 元素
 constexpr FlagSpec kCloneFlags[] = {
+    {"depth", "--depth={v}", FlagKind::Value, nullptr, IDS_FLAG_CLONE_DEPTH, false, false},
+    {"single-branch", "--single-branch", FlagKind::Toggle, nullptr, IDS_FLAG_CLONE_SINGLE, false, false},
+    {"branch", "--branch={v}", FlagKind::Value, nullptr, IDS_FLAG_CLONE_BRANCH, false, false},
+    {"no-tags", "--no-tags", FlagKind::Toggle, nullptr, IDS_FLAG_CLONE_NO_TAGS, false, false},
+    {"filter", "--filter={v}", FlagKind::Value, nullptr, IDS_FLAG_CLONE_FILTER, false, false},
     {"recurse-submodules", "--recurse-submodules", FlagKind::Toggle, nullptr, IDS_FLAG_RECURSE_SUBMODULE, false, false},
 };
 
@@ -143,7 +150,7 @@ const CommandSpec kCommands[] = {
       ExecKind::CliPanel, kInitFlags, 1, "git init {flags}"),
     C(1002, "repo.clone", GroupId::Repo, IDS_CMD_REPO_CLONE,
       kSelDir | kSelBg, false, Danger::Safe, ParamKind::Url, ParamSource::None, "url",
-      ExecKind::CliStream, kCloneFlags, 1, "git clone {flags} {url}"),
+      ExecKind::CliStream, kCloneFlags, 6, "git clone {flags} {url}"),
     C(1003, "app.console", GroupId::Repo, IDS_CMD_APP_CONSOLE,
       kSelAny, false, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
       ExecKind::Internal, nullptr, 0, nullptr),
@@ -173,8 +180,19 @@ const CommandSpec kCommands[] = {
     C(1107, "commit.undo", GroupId::Commit, IDS_CMD_COMMIT_UNDO,
       kSelDir | kSelBg, true, Danger::Destructive, ParamKind::None, ParamSource::None, nullptr,
       ExecKind::CliPanel, nullptr, 0, "git reset --soft HEAD~1"),
+    // 合并提交：复选连续的提交 → 合成一条（窗口 gui/squash_window.cpp；核心 core/squash.cpp）
+    // Internal：交互在"复选列表"里完成，不由参数面板拼 argv（脚本/CI 用 GitRT.exe --squash）
+    C(1108, "commit.squash", GroupId::Commit, IDS_CMD_COMMIT_SQUASH,
+      kSelDir | kSelBg, true, Danger::Destructive, ParamKind::None, ParamSource::None, nullptr,
+      ExecKind::Internal, nullptr, 0, nullptr),
 
     // ------------------------------------------------------------ 同步
+    C(2109, "history.restore", GroupId::Inspect, IDS_CMD_HISTORY_RESTORE,
+      kSelDir | kSelBg, true, Danger::Careful, ParamKind::None, ParamSource::None, nullptr,
+      ExecKind::Internal, nullptr, 0, nullptr),
+    C(2110, "remote.panel", GroupId::Sync, IDS_CMD_REMOTE_PANEL,
+      kSelDir | kSelBg, false, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
+      ExecKind::Internal, nullptr, 0, nullptr),
     C(1201, "sync.pull", GroupId::Sync, IDS_CMD_SYNC_PULL,
       kSelDir | kSelBg, true, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
       ExecKind::CliStream, kPullFlags, 4, "git pull {flags}"),

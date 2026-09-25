@@ -13,7 +13,6 @@ namespace grt::gui {
 const wchar_t* kProgressClass = L"GitRT.ProgressWindow";
 
 enum : int { IDC_PRG_BAR = 300, IDC_PRG_LOG, IDC_PRG_CANCEL, IDC_PRG_CLOSE };
-enum : UINT_PTR { kTimerReveal = 1 };
 
 // 创建参数（与窗口状态分离，避免拷贝 std::thread / std::atomic）
 struct ProgInit {
@@ -22,15 +21,6 @@ struct ProgInit {
     std::shared_ptr<CancellationToken> cancel;
 };
 
-struct TaskOutcome {
-    bool         ok = false;
-    bool         cancelled = false;
-    int          exitCode = 0;
-    uint64_t     ms = 0;
-    std::wstring failedCommand;
-    std::string  err;
-    std::string  out;      // 合并输出（供宿主窗口显示"运行结果"）
-};
 
 namespace {
 
@@ -66,13 +56,15 @@ void PostLog(HWND hwnd, const std::string& line) {
     ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(new std::string(line)));
 }
 
-void WorkerProc(ProgState* st, HWND hwnd) {
+// 顺序执行 BuiltCommand 的多条命令：日志/进度都投给 hwnd，结果写进 oc。
+// 进度窗口与参数面板的"运行结果"框共用这一段。
+void RunCommandSequence(HWND hwnd, const CommandSpec& spec, const BuiltCommand& cmd,
+                        CancellationToken* cancel, TaskOutcome* oc) {
     auto runner = MakeProcessGitRunner();
-    auto* oc = new TaskOutcome();
-    const bool stream = (st->spec.exec == ExecKind::CliStream);
+    const bool stream = (spec.exec == ExecKind::CliStream);
 
-    for (size_t i = 0; i < st->cmd.argvList.size(); ++i) {
-        const auto& argv = st->cmd.argvList[i];
+    for (size_t i = 0; i < cmd.argvList.size(); ++i) {
+        const auto& argv = cmd.argvList[i];
         std::wstring disp;
         for (const auto& a : argv) {
             if (!disp.empty()) disp += L' ';
@@ -83,7 +75,7 @@ void WorkerProc(ProgState* st, HWND hwnd) {
         Invocation inv;
         inv.exe = App().gitExe;
         inv.argv = argv;
-        inv.cwd = st->cmd.cwd.empty() ? App().repoRoot : st->cmd.cwd;
+        inv.cwd = cmd.cwd.empty() ? App().repoRoot : cmd.cwd;
         inv.env = BuildGitEnvironment(false, L"");
         inv.timeoutMs = stream ? 0 : 120000;
 
@@ -116,7 +108,7 @@ void WorkerProc(ProgState* st, HWND hwnd) {
             }
         };
 
-        const RunResult r = runner->RunSync(inv, st->cancel.get(), onChunk, onChunk);
+        const RunResult r = runner->RunSync(inv, cancel, onChunk, onChunk);
         oc->ms += r.elapsedMs;
         oc->err = r.err;
         if (!pending.empty()) PostLog(hwnd, pending);
@@ -135,6 +127,11 @@ void WorkerProc(ProgState* st, HWND hwnd) {
         }
         oc->ok = true;
     }
+}
+
+void WorkerProc(ProgState* st, HWND hwnd) {
+    auto* oc = new TaskOutcome();
+    RunCommandSequence(hwnd, st->spec, st->cmd, st->cancel.get(), oc);
     ::PostMessageW(hwnd, WM_GRT_TASK_DONE, 0, reinterpret_cast<LPARAM>(oc));
 }
 
@@ -146,7 +143,7 @@ void AppendLog(HWND edit, const std::wstring& line, size_t* counter) {
     }
     const int len = ::GetWindowTextLengthW(edit);
     ::SendMessageW(edit, EM_SETSEL, static_cast<WPARAM>(len), static_cast<LPARAM>(len));
-    std::wstring text = line;
+    std::wstring text = ToCrlf(line);   // git 输出是 LF-only，Edit 不认裸 LF（会把所有行并成一行）
     text += L"\r\n";
     ::SendMessageW(edit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
     ::SendMessageW(edit, EM_SCROLLCARET, 0, 0);
@@ -183,19 +180,23 @@ LRESULT CALLBACK ProgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->closeBtn = MakeChild(hwnd, WC_BUTTONW, Str(IDS_BTN_CLOSE),
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_DISABLED, 0, IDC_PRG_CLOSE,
                                      Th().fontUi);
-            SetText(st->title, Str(st->spec.titleRes));
+            SetText(st->title, Str(st->spec.titleRes) + L"   —   " + st->cmd.display);
             ThemeApply(hwnd);
-            ::SetTimer(hwnd, kTimerReveal, 1500, nullptr);   // 1.5s 后揭示，避免短命令闪烁
+            // 执行一开始就出现（不再等 1.5s）：用户点"执行"必须马上看到"正在跑什么命令"。
+            // 窗口结束后**保留**（不再对短命令静默关闭），日志里第一行就是真实命令行。
+            st->shown = true;
+            ::SetWindowTextW(hwnd, (Str(st->spec.titleRes) + L" — GitRT").c_str());
+            ::ShowWindow(hwnd, SW_SHOW);
             st->worker = std::thread(WorkerProc, st, hwnd);
             return 0;
         }
-        case WM_TIMER: {
-            if (wp == kTimerReveal && st && !st->finished.load() && !st->shown) {
-                st->shown = true;
-                ::ShowWindow(hwnd, SW_SHOW);
+        case WM_KEYDOWN:
+            // Esc：跑完就能关（运行中忽略，避免误关掉正在执行的命令）
+            if (wp == VK_ESCAPE && st && st->finished.load()) {
+                ::DestroyWindow(hwnd);
+                return 0;
             }
-            return 0;
-        }
+            break;
         case WM_SIZE: {
             if (!st) break;
             RECT rc{};
@@ -232,7 +233,7 @@ LRESULT CALLBACK ProgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::unique_ptr<TaskOutcome> oc(reinterpret_cast<TaskOutcome*>(lp));
             if (!st || !oc) return 0;
             st->finished.store(true);
-            ::KillTimer(hwnd, kTimerReveal);
+            // （揭示定时器已移除：窗口在工作线程启动前就显示）
 
             // 先把"运行结果"汇总回宿主窗口（AI 助手窗口靠它显示结果）
             HWND owner = ::GetWindow(hwnd, GW_OWNER);
@@ -249,6 +250,12 @@ LRESULT CALLBACK ProgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 ::PostMessageW(owner, WM_GRT_TASK_FINISHED, 0, reinterpret_cast<LPARAM>(ts));
             }
 
+            // ★ 执行结束**一定**刷新状态（无论成功/失败/取消）：命令可能已经改了工作区，
+            //   旧实现只在"静默成功的短命令"这一路上刷新，慢命令与失败路径都不刷新。
+            //   wp=1 = "先把 git status 重新读一遍再刷新视图"。
+            HWND target = App().main ? App().main : owner;
+            if (target) ::PostMessageW(target, WM_GRT_STATUS_RELOAD, 1, 0);
+
             std::wstring phase;
             if (oc->cancelled) {
                 phase = Str(IDS_MSG_CANCELLED);
@@ -262,12 +269,7 @@ LRESULT CALLBACK ProgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetText(st->phase, phase);
             AppendLog(st->logEdit, L"--- " + phase, &st->logChars);
 
-            // 成功且从未显示过 → 静默关闭（状态刷新会体现结果）
-            if (oc->ok && !st->shown) {
-                ::DestroyWindow(hwnd);
-                if (owner) ::PostMessageW(owner, WM_GRT_STATUS_RELOAD, 0, 0);
-                return 0;
-            }
+            // 窗口保留，让人看清"跑了哪条命令 + 输出是什么"；Close 关闭（Esc 亦可）
             if (!st->shown) {
                 st->shown = true;
                 ::ShowWindow(hwnd, SW_SHOW);
@@ -337,6 +339,8 @@ void EnsureProgressClass() {
     wc.lpfnWndProc = ProgProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = GitRTAppIcon();
+    wc.hIconSm = GitRTAppIcon();
     wc.lpszClassName = kProgressClass;
     ::RegisterClassExW(&wc);
     done = true;
@@ -344,6 +348,23 @@ void EnsureProgressClass() {
 
 }  // namespace
 
+// 就地执行：不建窗口，把消息投给 target（参数面板的"运行结果"框）
+void RunBuiltCommandOn(HWND target, const CommandSpec& spec, const BuiltCommand& cmd,
+                       std::shared_ptr<CancellationToken> cancel) {
+    if (!target) return;
+    struct Job {
+        CommandSpec                        spec;
+        BuiltCommand                       cmd;
+        std::shared_ptr<CancellationToken> cancel;
+    };
+    auto* job = new Job{spec, cmd, std::move(cancel)};
+    std::thread([target, job]() {
+        auto* oc = new TaskOutcome();
+        RunCommandSequence(target, job->spec, job->cmd, job->cancel.get(), oc);
+        ::PostMessageW(target, WM_GRT_TASK_DONE, 0, reinterpret_cast<LPARAM>(oc));
+        delete job;
+    }).detach();
+}
 void RunBuiltCommand(HWND owner, const CommandSpec& spec, const BuiltCommand& cmd) {
     if (App().gitExe.empty()) {
         ::MessageBoxW(owner, Str(IDS_MSG_GIT_NOT_FOUND).c_str(), Str(IDS_TITLE_MAIN).c_str(),
@@ -362,7 +383,7 @@ void RunBuiltCommand(HWND owner, const CommandSpec& spec, const BuiltCommand& cm
                                ::GetModuleHandleW(nullptr), &init);
     if (!h) return;
     CenterOnOwner(h, owner);
-    ::ShowWindow(h, SW_HIDE);   // 由 WM_TIMER 决定是否揭示
+    ::ShowWindow(h, SW_HIDE);   // 创建过程先隐藏；WM_CREATE 里控件就绪后立即 SW_SHOW
 }
 
 }  // namespace grt::gui

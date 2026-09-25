@@ -1,5 +1,9 @@
 // 主窗口：左命令导航 / 右内容（状态视图或参数面板）/ 顶部仓库选择（《技术实现设计》§9.1）
 #include "gui.h"
+#include "config.h"
+#include "remote.h"
+#include <memory>
+#include <thread>
 
 #include <shellapi.h>
 #include <shlobj.h>
@@ -11,20 +15,24 @@ namespace grt::gui {
 const wchar_t* kAppWindowClass = L"GitRT.MainWindow";
 
 enum : int {
+    kTimerAutoFetch = 9,
     IDC_AW_PICK_REPO = 700,
     IDC_AW_REPO_LABEL,
     IDC_AW_REFRESH,
     IDC_AW_LIST,
     IDC_AW_STATUS_BAR,
     IDC_AW_AI,
+    IDC_AW_SETTINGS,
 };
 enum : int { kStatusPanelCommand = 1405 };
 
 namespace {
 
 struct AwState {
+    ULONGLONG lastAutoFetch = 0;   // 上次自动抓取的时间（毫秒 tick）
     HWND repoBtn = nullptr, repoLabel = nullptr, refreshBtn = nullptr, aiBtn = nullptr, list = nullptr,
          statusBar = nullptr;
+    HWND setBtn = nullptr;            // 首选项（AI 设置）
     HWND view = nullptr, panel = nullptr;
     std::vector<CommandId> itemCmd;   // 列表项 → 命令 ID（0 = 分组标题）
 };
@@ -74,6 +82,9 @@ void Layout(HWND hwnd, AwState* st) {
     if (st->aiBtn)
         ::MoveWindow(st->aiBtn, clientW - pad - Scale(90) - Scale(8) - Scale(120), Scale(8), Scale(120),
                      Scale(28), TRUE);
+    if (st->setBtn)
+        ::MoveWindow(st->setBtn, clientW - pad - Scale(90) - Scale(8) - Scale(120) - Scale(8) - Scale(100),
+                     Scale(8), Scale(100), Scale(28), TRUE);
     ::MoveWindow(st->list, 0, toolbarH, leftW, clientH - toolbarH - statusH, TRUE);
 
     const int cx = leftW + Scale(10), cy = toolbarH + Scale(6);
@@ -159,6 +170,9 @@ LRESULT CALLBACK AppProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, IDC_AW_REFRESH, Th().fontUi);
             st->aiBtn = MakeChild(hwnd, WC_BUTTONW, Str(IDS_CMD_APP_AI),
                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, IDC_AW_AI, Th().fontUi);
+            // 首选项（AI 设置）直达按钮：右键菜单现在只有一个入口，需要从这里进设置
+            st->setBtn = MakeChild(hwnd, WC_BUTTONW, Str(IDS_TITLE_SETTINGS),
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, IDC_AW_SETTINGS, Th().fontUi);
             st->list = MakeChild(hwnd, WC_LISTBOXW, L"",
                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | WS_BORDER | LBS_NOTIFY |
                                      LBS_NOINTEGRALHEIGHT,
@@ -175,6 +189,8 @@ LRESULT CALLBACK AppProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ShowStatusView(st);
             ::SendMessageW(st->list, LB_SETTOPINDEX, 0, 0);
             Layout(hwnd, st);
+            // 持续跟踪远端：每 60 秒看一次"自动抓取间隔"，到点就在工作线程里 git fetch --prune
+            ::SetTimer(hwnd, kTimerAutoFetch, 60000, nullptr);
             return 0;
         }
         case WM_SIZE:
@@ -209,6 +225,11 @@ LRESULT CALLBACK AppProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     if (ai) ExecuteInternalCommand(hwnd, *ai, {}, nullptr);
                     return 0;
                 }
+                case IDC_AW_SETTINGS: {
+                    const CommandSpec* set = FindCommandByKey("app.settings");
+                    if (set) ExecuteInternalCommand(hwnd, *set, {}, nullptr);
+                    return 0;
+                }
                 case IDC_AW_LIST:
                     if (HIWORD(wp) == LBN_SELCHANGE) {
                         const int sel = static_cast<int>(::SendMessageW(st->list, LB_GETCURSEL, 0, 0));
@@ -221,7 +242,42 @@ LRESULT CALLBACK AppProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
+        case WM_TIMER:
+            // 自动抓取：到点就抓一次（在工作线程里，别卡 UI）
+            if (wp == kTimerAutoFetch && st && !App().autoFetchBusy) {
+                const int minutes = ConfigStore::Instance().GetInt("autoFetchMinutes", 0);
+                const ULONGLONG now = ::GetTickCount64();
+                if (minutes > 0 && !App().gitExe.empty() && !App().repoRoot.empty() &&
+                    now - st->lastAutoFetch >= static_cast<ULONGLONG>(minutes) * 60000ULL) {
+                    st->lastAutoFetch = now;
+                    App().autoFetchBusy = true;
+                    const std::wstring git = App().gitExe, root = App().repoRoot;
+                    std::thread([hwnd, git, root]() {
+                        const std::wstring err = FetchRemote(git, root);
+                        ::PostMessageW(hwnd, WM_GRT_AUTOFETCH_DONE, 0,
+                                       reinterpret_cast<LPARAM>(new std::wstring(err)));
+                    }).detach();
+                }
+            }
+            return 0;
+        case WM_GRT_AUTOFETCH_DONE: {
+            std::unique_ptr<std::wstring> err(reinterpret_cast<std::wstring*>(lp));
+            App().autoFetchBusy = false;
+            if (err && !err->empty()) {
+                GRT_LOGW("gui", "auto-fetch 失败：" << U8(*err));   // 离线是常态，不打扰用户
+            }
+            ::PostMessageW(hwnd, WM_GRT_STATUS_RELOAD, 1, 0);   // 领先/落后跟着刷新
+            return 0;
+        }
         case WM_GRT_STATUS_RELOAD:
+            // wp != 0：命令刚跑完（工作区可能已变）→ **重新读** git 状态再刷新视图。
+            // 只 reload 视图会显示旧数据，这就是"执行完状态没变"的原因。
+            if (wp) {
+                RefreshRepoStatus(nullptr);   // 重新读；内部按需再发 wp=0 的通知
+                StatusViewReload(st->view);
+                UpdateBottomBar(st);
+                return 0;
+            }
             StatusViewReload(st->view);
             UpdateBottomBar(st);
             return 0;
@@ -270,7 +326,8 @@ void RegisterAppWindowClass() {
     wc.lpfnWndProc = AppProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIcon = GitRTAppIcon();      // 任务栏图标 == 右键菜单图标（同一张 gitrt.ico）
+    wc.hIconSm = GitRTAppIcon();
     wc.lpszClassName = kAppWindowClass;
     ::RegisterClassExW(&wc);
 }

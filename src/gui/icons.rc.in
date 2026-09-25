@@ -1,0 +1,8 @@
+// GitRT.exe 的图标资源（由 CMake configure_file 生成）
+//   ★ 与 GitRT.Shell.dll（gitrt_shell.rc.in）用**同一对 .ico 文件**，
+//     这样"任务栏图标"和"右键菜单里的图标"必然一致（一致性由构造保证，不靠手工同步）。
+//   资源 ID 101/102 与 Shell 侧的 kIconApp/kIconWarn 相同（各自模块内独立编号）。
+#include "@GRT_SRC_DIR@/src/core/resource_ids.h"
+
+IDI_GRT_APP   ICON "@GRT_ICON_APP_FILE@"
+IDI_GRT_WARN  ICON "@GRT_ICON_WARN_FILE@"

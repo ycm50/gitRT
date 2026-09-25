@@ -1,0 +1,430 @@
+# ---------------------------------------------------------------------------
+# GitRT 构建 / 测试 / 打包（GitHub Actions）
+#
+#   与本地完全同一套流程（README「快速开始」「测试」）：
+#     · MSYS2 UCRT64 工具链（g++ / windres / ninja / objdump）
+#     · Debug + Release 两个配置都构建
+#     · CTest（二进制自带的 2 个测试）+ GUI 自检 + Shell 探针自检/菜单 dump
+#     · 功能套件（远端与还原 / 合并提交 / 克隆选项）—— 纯 CLI + 真 git，CI 可跑
+#     · 打包 Release 目录与 zip（packaging/scripts/build-release.ps1，内含 install/uninstall）
+#     · 打 tag 时自动建 GitHub Release 并附上 zip
+#
+#   ★ CI 踩过的坑（见 docs/技术实现设计.md 偏差 30）：
+#     1) **不要**把原生命令接进 `Select-Object -First N`：管道被提前关闭会让
+#        g++/cmake 被杀、退出码非 0；GitHub 的 pwsh 包装器把 $LASTEXITCODE 当步骤
+#        退出码 → 步骤直接失败。要先取到变量再截行，并在步骤末尾 $LASTEXITCODE = 0。
+#     2) **别猜 MSYS2 装在哪**：setup-msys2 有官方 output `msys2-location`，用它；
+#        它默认**不**把工具加进 PATH，所以后面统一用 $env:UCRT64_BIN 的绝对路径。
+#     3) 纯诊断步骤一律 `continue-on-error: true`。
+#
+#   两个 job 的「定位 UCRT64 工具链」步骤内容必须保持一致（改一处要同步另一处）。
+#
+#   注意：需要"注册身份包"的端到端用例（tools/test-all.ps1 的 D 阶段、现代菜单聚合）
+#   依赖本机的开发者模式 + 交互式桌面会话，CI 里不跑；它们在本地按 README 的
+#   「界面级验证」一节执行。
+# ---------------------------------------------------------------------------
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write        # 打 tag 时需要创建 Release
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 仅作为"候选路径"之一；真正的工具链目录由「定位 UCRT64 工具链」步骤决定
+  MSYS2_ROOT_HINT: C:/msys64
+
+jobs:
+  build:
+    name: build (${{ matrix.config }})
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 安装 MSYS2 UCRT64 工具链
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+
+      # ★ 别猜盘符：setup-msys2 自己会报安装位置（outputs.msys2-location），先信它；
+      #   再按环境变量/PATH/常见目录兜底（它默认**不**把工具加进 PATH）
+      - name: 定位 UCRT64 工具链
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cands = New-Object System.Collections.Generic.List[string]
+          $cands.Add('${{ steps.msys2.outputs.msys2-location }}/ucrt64/bin')
+          foreach ($root in @($env:MSYS2_ROOT, $env:MSYS2_ROOT_HINT, "$env:RUNNER_TEMP/msys64", 'C:/msys64', 'D:/msys64')) {
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            $cands.Add("$root/ucrt64/bin")
+          }
+          foreach ($tool in @('g++.exe', 'ninja.exe')) {
+            $c = Get-Command $tool -ErrorAction SilentlyContinue
+            if ($c -and $c.Source) { $cands.Add((Split-Path -Parent $c.Source)) }
+          }
+          foreach ($root in @($env:RUNNER_TEMP, 'C:/', 'D:/')) {
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            if (-not (Test-Path $root)) { continue }
+            Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like '*msys*' } |
+              ForEach-Object { $cands.Add((Join-Path $_.FullName 'ucrt64/bin')) }
+          }
+
+          $bin = $null
+          foreach ($c in $cands) {
+            if ([string]::IsNullOrWhiteSpace($c)) { continue }
+            $c = $c.Replace('\', '/')
+            if ((Test-Path (Join-Path $c 'g++.exe')) -and (Test-Path (Join-Path $c 'ninja.exe'))) {
+              $bin = $c
+              break
+            }
+          }
+          if (-not $bin) {
+            throw "找不到 UCRT64 工具链（需要 g++.exe 与 ninja.exe）。试过：$($cands -join ' | ')"
+          }
+          Add-Content -Path $env:GITHUB_ENV  -Value "UCRT64_BIN=$bin"
+          Add-Content -Path $env:GITHUB_PATH -Value $bin      # objdump 也要在 PATH 上（见下方导出表校验）
+          "UCRT64_BIN=$bin"
+          $gxx = & (Join-Path $bin 'g++.exe') --version
+          "g++: $($gxx[0])"
+          $LASTEXITCODE = 0
+
+      # 纯诊断：打印版本，出错也不该让构建挂（continue-on-error）
+      - name: 显示工具链版本
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # ★ 先取到变量再截行：直接 `| Select-Object -First 1` 会提前关管道，
+          #   原生命令被杀 → 非 0 退出 → GitHub 的 pwsh 包装器把步骤判失败（踩过）
+          $gxx = & (Join-Path $env:UCRT64_BIN 'g++.exe') --version 2>&1
+          "g++   : $($gxx | Select-Object -First 1)"
+          $cm = & cmake --version 2>&1
+          "cmake : $($cm | Select-Object -First 1)"
+          $nj = & (Join-Path $env:UCRT64_BIN 'ninja.exe') --version 2>&1
+          "ninja : $($nj | Select-Object -First 1)"
+          $od = & (Join-Path $env:UCRT64_BIN 'objdump.exe') --version 2>&1
+          "objdump: $($od | Select-Object -First 1)"
+          $LASTEXITCODE = 0
+
+      # 预设里的编译器路径写的是本地开发机的 A:\msys64，这里用命令行 -D 覆盖成 runner 的路径
+      # （命令行 -D 优先于 preset 的 cacheVariables）
+      - name: 配置（${{ matrix.config }}）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # ★ 早失败：UCRT64_BIN 没设好会让 CMakeCache 写成 CMAKE_MAKE_PROGRAM=/ninja.exe，
+          #   一直到构建时才报 "build tool execution failed"（本地踩过，很难查）
+          if (-not $env:UCRT64_BIN -or -not (Test-Path (Join-Path $env:UCRT64_BIN 'ninja.exe'))) {
+            throw "UCRT64_BIN 没设好（当前='$env:UCRT64_BIN'）：「定位 UCRT64 工具链」那步失败了吗？"
+          }
+          cmake --preset "ucrt64-${{ matrix.config == 'Debug' && 'debug' || 'release' }}" `
+            -DCMAKE_MAKE_PROGRAM="$env:UCRT64_BIN/ninja.exe" `
+            -DCMAKE_C_COMPILER="$env:UCRT64_BIN/gcc.exe" `
+            -DCMAKE_CXX_COMPILER="$env:UCRT64_BIN/g++.exe" `
+            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe"
+          if ($LASTEXITCODE -ne 0) { throw "配置失败（exit=$LASTEXITCODE）" }
+          $LASTEXITCODE = 0
+
+      - name: 构建
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cfg = "${{ matrix.config == 'Debug' && 'debug' || 'release' }}"
+          # 导出表校验不能被静默跳过（objdump 必须在 PATH 上，见定位步骤）
+          $line = Select-String -Path "build/$cfg/CMakeCache.txt" -Pattern '^GRT_OBJDUMP:' -ErrorAction SilentlyContinue
+          if (-not $line -or $line.Line -match 'NOTFOUND') {
+            throw "CMake 没找到 objdump → Shell DLL 导出表校验会被跳过（§2.3 要求 CI 必须执行）"
+          }
+          "objdump = $($line.Line)"
+          cmake --build "build/$cfg" --parallel
+          if ($LASTEXITCODE -ne 0) { throw "构建失败（exit=$LASTEXITCODE）" }
+          $LASTEXITCODE = 0
+
+      - name: CTest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ctest --test-dir "build/${{ matrix.config == 'Debug' && 'debug' || 'release' }}" --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "CTest 失败（exit=$LASTEXITCODE）" }
+          $LASTEXITCODE = 0
+
+      - name: GUI 自检（命令表 / 安全闸门 / AI 设置 / 远端与还原 / 执行后状态刷新 / 图标）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cfg = "${{ matrix.config == 'Debug' && 'debug' || 'release' }}"
+          $out = Join-Path $PWD "build/selftest-gui-$cfg.txt"
+          Remove-Item $out -Force -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath "build/$cfg/src/gui/GitRT.exe" `
+                 -ArgumentList "--self-test=$out" -PassThru
+          if (-not $p.WaitForExit(300000)) {
+            $p.Kill()
+            throw "GUI 自检超时（5 分钟没退出）"
+          }
+          if (Test-Path $out) { Get-Content $out } else { throw "GUI 自检没写出报告 $out" }
+          $sum = Select-String -Path $out -Pattern '== 结果:' | Select-Object -Last 1
+          if ($p.ExitCode -ne 0) { throw "GUI 自检失败（exit=$($p.ExitCode)）" }
+          if (-not $sum -or $sum.Line -notmatch '== 结果: (\d+) 通过 / 0 失败 ==') {
+            throw "GUI 自检没全绿：$(if ($sum) { $sum.Line } else { '没有结果行' })"
+          }
+          $LASTEXITCODE = 0
+
+      - name: Shell 扩展自检 + 菜单树 dump
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cfg = "${{ matrix.config == 'Debug' && 'debug' || 'release' }}"
+          $probe = "build/$cfg/src/shellprobe/GitRT.ShellProbe.exe"
+          $dll   = "build/$cfg/src/shell/GitRT.Shell.dll"
+          & $probe --self-test="build/selftest-shell-$cfg.txt" --dll $dll `
+                   --identity packaging/identity.json `
+                   --appx "build/$cfg/packaging/AppxManifest.xml" --workdir "build/$cfg"
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { throw "Shell 自检失败（exit=$code）" }
+          # ★ 先取到变量再截行（同上：直接管道给 Select-Object -Last 会改 $LASTEXITCODE）
+          $dump = & $probe --dump $PWD --dll $dll
+          $code = $LASTEXITCODE
+          $dump | Select-Object -Last 15
+          if ($code -ne 0) { throw "菜单 dump 失败（exit=$code）" }
+          $LASTEXITCODE = 0
+
+      # 功能套件：这三套是纯 CLI + 真 git 仓库的端到端（不弹窗口、不需要桌面会话），
+      # 所以 CI 里可以放心跑；GUI 相关的 demo 脚本仍然只在本地按 README 跑。
+      - name: 功能套件（远端与还原 / 合并提交 / 克隆选项）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cfg = "${{ matrix.config == 'Debug' && 'debug' || 'release' }}"
+          $exe = "build/$cfg/src/gui/GitRT.exe"
+          $suites = @(
+            @{ n = 'test-remote'; f = 'tools/test-remote.ps1' },
+            @{ n = 'test-squash'; f = 'tools/test-squash.ps1' },
+            @{ n = 'test-clone';  f = 'tools/test-clone.ps1'  }
+          )
+          $failed = @()
+          foreach ($s in $suites) {
+            "=== $($s.n) ==="
+            & pwsh -NoProfile -File $s.f -Exe $exe *>&1 | Select-Object -Last 40
+            if ($LASTEXITCODE -ne 0) { $failed += "$($s.n)(exit=$LASTEXITCODE)" }
+          }
+          if ($failed.Count -gt 0) { throw "功能套件失败：$($failed -join ', ')" }
+          $LASTEXITCODE = 0
+
+      # 关键产物：任何配置都要能跑，避免 Debug 通过 / Release 崩。
+      # 注意这是**裸二进制**（开发/调试用），可发布的安装包在 package job 的 GitRT-release 里
+      - name: 上传产物（${{ matrix.config }}）
+        uses: actions/upload-artifact@v5
+        with:
+          name: gitrt-binaries-${{ matrix.config }}
+          if-no-files-found: error
+          path: |
+            build/${{ matrix.config == 'Debug' && 'debug' || 'release' }}/src/gui/GitRT.exe
+            build/${{ matrix.config == 'Debug' && 'debug' || 'release' }}/src/shell/GitRT.Shell.dll
+            build/${{ matrix.config == 'Debug' && 'debug' || 'release' }}/src/shellprobe/GitRT.ShellProbe.exe
+            build/${{ matrix.config == 'Debug' && 'debug' || 'release' }}/packaging/AppxManifest.xml
+            build/selftest-gui-${{ matrix.config == 'Debug' && 'debug' || 'release' }}.txt
+            build/selftest-shell-${{ matrix.config == 'Debug' && 'debug' || 'release' }}.txt
+
+  package:
+    name: package (release zip)
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 安装 MSYS2 UCRT64 工具链
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+
+      # ★ 与 build job 的这一步**内容必须一致**（别猜安装位置：先信 action 的 output）
+      - name: 定位 UCRT64 工具链
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cands = New-Object System.Collections.Generic.List[string]
+          $cands.Add('${{ steps.msys2.outputs.msys2-location }}/ucrt64/bin')
+          foreach ($root in @($env:MSYS2_ROOT, $env:MSYS2_ROOT_HINT, "$env:RUNNER_TEMP/msys64", 'C:/msys64', 'D:/msys64')) {
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            $cands.Add("$root/ucrt64/bin")
+          }
+          foreach ($tool in @('g++.exe', 'ninja.exe')) {
+            $c = Get-Command $tool -ErrorAction SilentlyContinue
+            if ($c -and $c.Source) { $cands.Add((Split-Path -Parent $c.Source)) }
+          }
+          foreach ($root in @($env:RUNNER_TEMP, 'C:/', 'D:/')) {
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            if (-not (Test-Path $root)) { continue }
+            Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like '*msys*' } |
+              ForEach-Object { $cands.Add((Join-Path $_.FullName 'ucrt64/bin')) }
+          }
+
+          $bin = $null
+          foreach ($c in $cands) {
+            if ([string]::IsNullOrWhiteSpace($c)) { continue }
+            $c = $c.Replace('\', '/')
+            if ((Test-Path (Join-Path $c 'g++.exe')) -and (Test-Path (Join-Path $c 'ninja.exe'))) {
+              $bin = $c
+              break
+            }
+          }
+          if (-not $bin) {
+            throw "找不到 UCRT64 工具链（需要 g++.exe 与 ninja.exe）。试过：$($cands -join ' | ')"
+          }
+          Add-Content -Path $env:GITHUB_ENV  -Value "UCRT64_BIN=$bin"
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          "UCRT64_BIN=$bin"
+          $LASTEXITCODE = 0
+
+      - name: 配置 + 构建 Release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:UCRT64_BIN -or -not (Test-Path (Join-Path $env:UCRT64_BIN 'ninja.exe'))) {
+            throw "UCRT64_BIN 没设好（当前='$env:UCRT64_BIN'）：「定位 UCRT64 工具链」那步失败了吗？"
+          }
+          cmake --preset ucrt64-release `
+            -DCMAKE_MAKE_PROGRAM="$env:UCRT64_BIN/ninja.exe" `
+            -DCMAKE_C_COMPILER="$env:UCRT64_BIN/gcc.exe" `
+            -DCMAKE_CXX_COMPILER="$env:UCRT64_BIN/g++.exe" `
+            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe"
+          if ($LASTEXITCODE -ne 0) { throw "配置失败（exit=$LASTEXITCODE）" }
+          $line = Select-String -Path "build/release/CMakeCache.txt" -Pattern '^GRT_OBJDUMP:' -ErrorAction SilentlyContinue
+          if (-not $line -or $line.Line -match 'NOTFOUND') {
+            throw "CMake 没找到 objdump → Shell DLL 导出表校验会被跳过（§2.3 要求 CI 必须执行）"
+          }
+          cmake --build build/release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "构建失败（exit=$LASTEXITCODE）" }
+          $LASTEXITCODE = 0
+
+      # 版本号 = 最新 tag + 0.0.1（每节上限 9，进位；一个 tag 都没有就用 1.0.0）
+      - name: 计算版本（最新 tag + 0.0.1）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -File packaging/scripts/next-version.ps1 -OutFile build/grt-version.txt
+          if ($LASTEXITCODE -ne 0) { throw "算版本失败（exit=$LASTEXITCODE）" }
+          $v = (Get-Content build/grt-version.txt -Raw).Trim()
+          if ($v -notmatch '^\d+(\.\d+)+$') { throw "版本号不合法：[$v]" }
+          Add-Content -Path $env:GITHUB_ENV -Value "GRT_VERSION=$v"
+          "本次发布版本：$v"
+          $LASTEXITCODE = 0
+
+      - name: 版本规则自测（无 tag → 1.0.0 / 进位上限制 9）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          pwsh -NoProfile -File tools/test-next-version.ps1
+          if ($LASTEXITCODE -ne 0) { throw "版本规则自测失败（exit=$LASTEXITCODE）" }
+          $LASTEXITCODE = 0
+
+      - name: 组装发布包（app\ + package\ + install/uninstall 脚本 + zip）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -File packaging/scripts/build-release.ps1 -Config Release -OutDir build -Version $env:GRT_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "打包失败（exit=$LASTEXITCODE）" }
+          # 包里必须带 install/uninstall（用户装的入口）
+          $hasInstall = Get-ChildItem "build/dist" -Recurse -Filter 'install.ps1' -ErrorAction SilentlyContinue
+          $hasUninstall = Get-ChildItem "build/dist" -Recurse -Filter 'uninstall.ps1' -ErrorAction SilentlyContinue
+          if (-not $hasInstall) { throw "发布目录里没有 install.ps1" }
+          if (-not $hasUninstall) { throw "发布目录里没有 uninstall.ps1" }
+          "install.ps1   : $($hasInstall[0].FullName)"
+          "uninstall.ps1 : $($hasUninstall[0].FullName)"
+          $LASTEXITCODE = 0
+
+      # 真装到 <当前盘根>\gitRT、写注册表，再卸干净（用户要求的安装语义）
+      - name: 安装/卸载端到端（pwd 盘根\gitRT + 注册表）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          "pwd=$PWD  盘根=$([IO.Path]::GetPathRoot($PWD.Path))  PS=$($PSVersionTable.PSVersion)"
+          New-Item -ItemType Directory -Force -Path (Join-Path $PWD 'build') | Out-Null
+          $log = Join-Path $PWD 'build/install-uninstall-e2e.txt'
+          # ★ 直接跑并把输出写文件，**不要**接管道：接管道会把子进程输出吞掉，
+          #   这步一旦失败日志里什么都看不到（踩过）
+          & pwsh -NoProfile -File tools/test-install-uninstall.ps1 *> $log
+          $code = $LASTEXITCODE
+          Get-Content $log | Select-Object -Last 60
+          if ($code -ne 0) { throw "install/uninstall 端到端失败（exit=$code，上面是输出末端）" }
+          $LASTEXITCODE = 0
+
+      - name: 显示发布目录
+        shell: pwsh
+        run: Get-ChildItem -Recurse -File build/dist | Select-Object FullName, Length
+
+      - name: 上传发布包（zip + 安装脚本 + 可直接运行的 app 目录）
+        uses: actions/upload-artifact@v5
+        with:
+          name: GitRT-release
+          if-no-files-found: error
+          path: |
+            build/dist/*.zip
+            build/dist/**/install.ps1
+            build/dist/**/uninstall.ps1
+            build/dist/**/app/*.exe
+            build/dist/**/app/*.dll
+            build/dist/**/package/AppxManifest.xml
+
+  release:
+    name: 发布（打 tag 时）
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 下载发布包
+        uses: actions/download-artifact@v5
+        with:
+          name: GitRT-release
+          path: dist
+
+      - name: 创建 GitHub Release 并附上 zip
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Get-ChildItem dist -Recurse -Filter *.zip | Select-Object -First 1
+          if (-not $zip) { throw "没有找到发布 zip" }
+          gh release create "${{ github.ref_name }}" $zip.FullName `
+            --title "GitRT ${{ github.ref_name }}" `
+            --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败（exit=$LASTEXITCODE）" }
+          $LASTEXITCODE = 0

@@ -506,6 +506,10 @@ if ($SkipShell) {
 
             # D9 外壳自身的菜单聚合（IContextMenu）能拉起我们的处理器
             $p = $runProbe.Invoke(@("--shell-menu", "--dump", $repo), $null)
+            if ($p.ExitCode -eq -1073741510) {   # 0xC000013A：控制台偶发收到 Ctrl+C
+                Say "  [retry] D9：探针被 Ctrl+C 打断（0xC000013A），重试一次"
+                $p = $runProbe.Invoke(@("--shell-menu", "--dump", $repo), $null)
+            }
             Check "D9 外壳聚合（IContextMenu::QueryContextMenu）成功" ($p.ExitCode -eq 0) `
                   ("exit=$($p.ExitCode)")
         } finally {

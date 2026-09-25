@@ -2,20 +2,74 @@
 
 #include <winhttp.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 
 #include "json_util.h"
 #include "config.h"
+#include "command_builder.h"
 
 namespace grt {
 
 // ================================================================== 配置
-// AI 配置是 config.json 的一个子集；读写统一走 ConfigStore（扁平键值表），
-// 这样 AI 保存设置时**不会覆盖** Shell 菜单写下的 flags.* 键（反之亦然）。
+// AI 设置主存储：exe 同目录的 GitRT.ai.json（明文；产品决策，见 ai_client.h）
+std::wstring AiKeyFilePath() {
+    wchar_t exe[MAX_PATH]{};
+    const DWORD n = ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring dir = (n > 0 && n < MAX_PATH) ? std::wstring(exe, n) : std::wstring();
+    const size_t slash = dir.find_last_of(L"\\/");
+    dir = (slash == std::wstring::npos) ? std::wstring() : dir.substr(0, slash + 1);
+    return dir + L"GitRT.ai.json";
+}
+
+namespace {
+
+std::string ReadWholeFile(const std::wstring& path) {
+    UniqueHandle h(::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (h.get() == INVALID_HANDLE_VALUE) return {};
+    LARGE_INTEGER size{};
+    if (!::GetFileSizeEx(static_cast<HANDLE>(h.get()), &size) || size.QuadPart <= 0 ||
+        size.QuadPart > (1 << 20))
+        return {};
+    std::string out(static_cast<size_t>(size.QuadPart), '\0');
+    DWORD got = 0;
+    if (!::ReadFile(static_cast<HANDLE>(h.get()), out.data(), static_cast<DWORD>(out.size()), &got,
+                    nullptr))
+        return {};
+    out.resize(got);
+    return out;
+}
+
+bool WriteWholeFile(const std::wstring& path, const std::string& text) {
+    UniqueHandle h(::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (h.get() == INVALID_HANDLE_VALUE) return false;
+    DWORD wrote = 0;
+    const bool ok = ::WriteFile(static_cast<HANDLE>(h.get()), text.data(),
+                                static_cast<DWORD>(text.size()), &wrote, nullptr) != FALSE;
+    return ok && wrote == text.size();
+}
+
+// 目录可写探测（界面要明确告诉用户"Key 存到了哪里/能不能存"）
+bool DirWritable(const std::wstring& filePath) {
+    const std::wstring probe = filePath + L".probe";
+    UniqueHandle h(::CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_TEMPORARY, nullptr));
+    if (h.get() == INVALID_HANDLE_VALUE) return false;
+    h.reset();
+    ::DeleteFileW(probe.c_str());
+    return true;
+}
+
+}  // namespace
+
 AiConfig LoadAiConfig() {
     AiConfig cfg;
     cfg.configPath = ConfigFilePath();
+    cfg.keyFilePath = AiKeyFilePath();
+    cfg.keyFileUsable = DirWritable(cfg.keyFilePath);
 
     auto& store = ConfigStore::Instance();
     store.Reload(true);
@@ -24,7 +78,6 @@ AiConfig LoadAiConfig() {
     cfg.model = W(store.GetString("aiModel", WideToUtf8(cfg.model)));
     cfg.apiKeyEnv = store.GetString("aiApiKeyEnv", cfg.apiKeyEnv);
     cfg.timeoutMs = static_cast<uint32_t>(store.GetInt("aiTimeoutMs", static_cast<int>(cfg.timeoutMs)));
-    if (cfg.timeoutMs < 5000 || cfg.timeoutMs > 600000) cfg.timeoutMs = 60000;
     if (!existed) {
         cfg.loadNote = "config.json 不存在，已写入默认值";
         SaveAiConfig(cfg);
@@ -32,7 +85,30 @@ AiConfig LoadAiConfig() {
         cfg.loadNote = store.LastLoadOk() ? "已从 config.json 读取" : store.LastLoadNote();
     }
 
-    // 环境变量覆盖（CI/临时测试用；不写入文件）。必须最后应用，且任何分支都不能跳过。
+    // ② exe 同目录的 GitRT.ai.json 覆盖 config.json（它才是"AI 设置"界面的落点）
+    const std::string fileText = ReadWholeFile(cfg.keyFilePath);
+    if (!fileText.empty()) {
+        std::string v;
+        if (JsonFindString(fileText, "endpoint", &v) && !v.empty()) cfg.endpoint = W(v);
+        if (JsonFindString(fileText, "model", &v) && !v.empty()) cfg.model = W(v);
+        if (JsonFindString(fileText, "apiKeyEnv", &v) && !v.empty()) cfg.apiKeyEnv = v;
+        const std::string rawTimeout = [&] {
+            std::string r;
+            return JsonFindRaw(fileText, "timeoutMs", &r) ? r : std::string();
+        }();
+        if (!rawTimeout.empty()) {
+            const int t = std::atoi(rawTimeout.c_str());
+            if (t >= 5000 && t <= 600000) cfg.timeoutMs = static_cast<uint32_t>(t);
+        }
+        cfg.systemPrompt = JsonFindString(fileText, "systemPrompt", &v) ? W(v) : std::wstring();
+        if (JsonFindString(fileText, "apiKey", &v)) {
+            cfg.apiKey = Trim(W(v));
+            cfg.keyFromFile = !cfg.apiKey.empty();
+        }
+        cfg.loadNote += "（已应用 " + WideToUtf8(cfg.keyFilePath) + "）";
+    }
+
+    // ③ 环境变量覆盖（CI/临时测试用；不写入文件）。必须最后应用，任何分支都不能跳过。
     auto envOverride = [](const wchar_t* name) -> std::wstring {
         wchar_t buf[2048]{};
         const DWORD n = ::GetEnvironmentVariableW(name, buf, 2048);
@@ -52,21 +128,38 @@ AiConfig LoadAiConfig() {
         overridden = true;
     }
     if (overridden) cfg.loadNote += "（已应用 GITRT_AI_* 环境变量覆盖）";
+    if (cfg.timeoutMs < 5000 || cfg.timeoutMs > 600000) cfg.timeoutMs = 60000;
     return cfg;
 }
 
 bool SaveAiConfig(const AiConfig& cfg) {
-    // 只改 AI 自己的 4 个键，其余键（flags.* / menu.* / …）原样保留
+    // ① 主存储：exe 同目录的 GitRT.ai.json（明文，含 Key）
+    std::string json = "{\n";
+    json += "  \"endpoint\": \"" + JsonEscape(WideToUtf8(cfg.endpoint)) + "\",\n";
+    json += "  \"model\": \"" + JsonEscape(WideToUtf8(cfg.model)) + "\",\n";
+    json += "  \"apiKey\": \"" + JsonEscape(WideToUtf8(cfg.apiKey)) + "\",\n";
+    json += "  \"apiKeyEnv\": \"" + JsonEscape(cfg.apiKeyEnv) + "\",\n";
+    json += "  \"timeoutMs\": " + std::to_string(cfg.timeoutMs) + ",\n";
+    json += "  \"systemPrompt\": \"" + JsonEscape(WideToUtf8(cfg.systemPrompt)) + "\"\n";
+    json += "}\n";
+    const std::wstring path = cfg.keyFilePath.empty() ? AiKeyFilePath() : cfg.keyFilePath;
+    const bool ok = WriteWholeFile(path, json);
+
+    // ② 兼容：config.json 里的 ai* 键仍保持同步（不含 Key），老流程/文档仍然成立
     auto& store = ConfigStore::Instance();
     store.Reload();
     store.SetString("aiEndpoint", WideToUtf8(cfg.endpoint));
     store.SetString("aiModel", WideToUtf8(cfg.model));
     store.SetString("aiApiKeyEnv", cfg.apiKeyEnv);
     store.SetInt("aiTimeoutMs", static_cast<int>(cfg.timeoutMs));
-    return store.Save();
+    store.Save();
+    return ok;
 }
 
 std::wstring ResolveApiKey(const AiConfig& cfg) {
+    // ① 界面里填的明文 Key（exe 同目录的 GitRT.ai.json）
+    if (!cfg.apiKey.empty()) return cfg.apiKey;
+    // ② 环境变量（名字可配置）：适合"不想让 Key 落盘"的用户与 CI
     if (cfg.apiKeyEnv.empty()) return {};
     const std::wstring name = W(cfg.apiKeyEnv);
     wchar_t buf[1024]{};
@@ -76,9 +169,12 @@ std::wstring ResolveApiKey(const AiConfig& cfg) {
 }
 
 // ================================================================== HTTP
-HttpResponse HttpPostJson(const std::wstring& url,
-                          const std::vector<std::pair<std::wstring, std::wstring>>& headers,
-                          const std::string& bodyUtf8, uint32_t timeoutMs) {
+namespace {
+
+// POST/GET 共用实现（原 HttpPostJson 直接内联，这里抽出来给 GET 复用）
+HttpResponse HttpRequest(const wchar_t* method, const std::wstring& url,
+                         const std::vector<std::pair<std::wstring, std::wstring>>& headers,
+                         const std::string& bodyUtf8, uint32_t timeoutMs) {
     HttpResponse r;
     URL_COMPONENTS uc{};
     uc.dwStructSize = sizeof(uc);
@@ -111,7 +207,7 @@ HttpResponse HttpPostJson(const std::wstring& url,
         return r;
     }
     DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET req = ::WinHttpOpenRequest(conn, L"POST", pathStr.c_str(), nullptr,
+    HINTERNET req = ::WinHttpOpenRequest(conn, method, pathStr.c_str(), nullptr,
                                          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!req) {
         r.error = "WinHttpOpenRequest 失败 err=" + std::to_string(::GetLastError());
@@ -153,6 +249,115 @@ HttpResponse HttpPostJson(const std::wstring& url,
     return r;
 }
 
+}  // namespace
+
+HttpResponse HttpPostJson(const std::wstring& url,
+                          const std::vector<std::pair<std::wstring, std::wstring>>& headers,
+                          const std::string& bodyUtf8, uint32_t timeoutMs) {
+    return HttpRequest(L"POST", url, headers, bodyUtf8, timeoutMs);
+}
+
+HttpResponse HttpGetJson(const std::wstring& url,
+                         const std::vector<std::pair<std::wstring, std::wstring>>& headers,
+                         uint32_t timeoutMs) {
+    // GET 不带请求体（WinHttpSendRequest 传 0 长度即为 GET）
+    return HttpRequest(L"GET", url, headers, std::string(), timeoutMs);
+}
+
+// ---------------------------------------------------------------- 模型列表
+std::wstring AiModelsUrlFromEndpoint(const std::wstring& endpointIn) {
+    std::wstring u = Trim(endpointIn);
+    while (!u.empty() && u.back() == L'/') u.pop_back();
+    for (const wchar_t* tail : {L"/chat/completions", L"/completions"}) {
+        const size_t n = std::wcslen(tail);
+        if (u.size() >= n && ::_wcsicmp(u.c_str() + u.size() - n, tail) == 0) {
+            u.resize(u.size() - n);
+            while (!u.empty() && u.back() == L'/') u.pop_back();
+            break;
+        }
+    }
+    if (u.empty()) return {};
+    return u + L"/models";
+}
+
+namespace {
+
+// 从 pos 处读一个 JSON 字符串字面量（含转义），成功返回真并把结束位置写回 end
+bool ReadJsonStringAt(const std::string& json, size_t pos, std::string* out, size_t* end) {
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\r' ||
+                                 json[pos] == '\n'))
+        ++pos;
+    if (pos >= json.size() || json[pos] != '"') return false;
+    ++pos;
+    std::string raw;
+    bool esc = false;
+    for (; pos < json.size(); ++pos) {
+        const char c = json[pos];
+        if (esc) {
+            raw += '\\';
+            raw += c;
+            esc = false;
+            continue;
+        }
+        if (c == '\\') {
+            esc = true;
+            continue;
+        }
+        if (c == '"') {
+            if (out) *out = JsonUnescape(raw);
+            if (end) *end = pos + 1;
+            return true;
+        }
+        raw += c;
+    }
+    return false;
+}
+
+}  // namespace
+
+ModelListResult FetchModelList(const AiConfig& cfg) {
+    ModelListResult out;
+    out.url = AiModelsUrlFromEndpoint(cfg.endpoint);
+    const std::wstring key = ResolveApiKey(cfg);
+    if (out.url.empty()) {
+        out.error = "接口地址为空";
+        return out;
+    }
+    if (key.empty()) {
+        out.error = "未配置 API Key";
+        return out;
+    }
+    std::vector<std::pair<std::wstring, std::wstring>> headers = {
+        {L"Accept", L"application/json"},
+        {L"Authorization", L"Bearer " + key},
+    };
+    const HttpResponse r = HttpGetJson(out.url, headers, (std::min)(cfg.timeoutMs, 30000u));
+    out.status = r.status;
+    out.error = r.error;
+    if (r.status != 200) return out;
+
+    // {"data":[{"id":"…", …}, …]}（也兼容 {"models":[…]} / 裸数组）
+    size_t pos = JsonFindKeyPos(r.body, "data");
+    if (pos == std::string::npos) pos = JsonFindKeyPos(r.body, "models");
+    if (pos == std::string::npos) pos = 0;
+    for (;;) {
+        const size_t kp = JsonFindKeyPos(r.body, "id", pos);
+        if (kp == std::string::npos) break;
+        std::string val;
+        size_t end = 0;
+        if (!ReadJsonStringAt(r.body, kp, &val, &end)) {
+            pos = kp + 1;
+            continue;
+        }
+        const std::wstring w = W(val);
+        if (!w.empty() && std::find(out.models.begin(), out.models.end(), w) == out.models.end())
+            out.models.push_back(w);
+        pos = end;
+        if (out.models.size() >= 500) break;   // 防御：异常大的列表
+    }
+    return out;
+}
+
 // ============================================================== 提示词
 std::string BuildPlannerSystemPrompt(const TitleResolver& titleRes) {
     std::string s;
@@ -163,6 +368,8 @@ std::string BuildPlannerSystemPrompt(const TitleResolver& titleRes) {
     s += "\u53ea\u8f93\u51fa\u4e00\u4e2a JSON \u5bf9\u8c61\uff0c\u4e0d\u8981\u8f93\u51fa\u4efb\u4f55"
          "\u89e3\u91ca\u6027\u6587\u5b57\u3001\u4e0d\u8981\u7528 markdown \u4ee3\u7801\u5757\u3002\n";
     s += "JSON \u7ed3\u6784\uff1a\n";
+    s += "\u4e8c\u9009\u4e00\uff1a\u67e5\u770b\u7c7b\u7528 {\"cmdline\":\"git ...\",...}\uff0c"
+         "\u5199\u64cd\u4f5c\u7528 {\"command\":\"<\u547d\u4ee4 key>\",...}\u3002\u5b57\u6bb5\uff1a\n";
     s += "{\"command\":\"<\u547d\u4ee4 key\uff0c\u65e0\u5408\u9002\u7684\u65f6\u5019\u7528 none>\","
          "\"params\":{\"<\u53c2\u6570\u540d>\":\"<\u503c>\"},"
          "\"flags\":{\"<\u9009\u9879 key>\":\"1 \u6216 0\"},"
@@ -174,10 +381,20 @@ std::string BuildPlannerSystemPrompt(const TitleResolver& titleRes) {
     s += "2. \u53c2\u6570\u540d\u7528\u8868\u4e2d\u7684 param \u540d\uff08\u5982\u6709\uff09\uff1b"
          "\u7528\u6237\u672a\u8bf4\u660e\u4f46\u5fc5\u9700\u65f6\uff0c\u9009\u6700\u5408\u7406\u7684"
          "\u9ed8\u8ba4\u503c\u3002\n";
-    s += "3. \u4e0d\u8981\u751f\u6210 git \u547d\u4ee4\u884c\uff0c\u53ea\u8fd4\u56de\u4e0a\u9762\u7684 JSON\u3002\n";
-    s += "4. \u82e5\u6ca1\u6709\u547d\u4ee4\u80fd\u5b8c\u6210\u7528\u6237\u610f\u56fe\uff0c"
+    s += "3. \u67e5\u770b\u7c7b\u9700\u6c42\uff08\u5f53\u524d\u5206\u652f/\u72b6\u6001/\u63d0\u4ea4\u5386\u53f2/\u5dee\u5f02/\u6587\u4ef6\u5386\u53f2\u7b49\uff09"
+         "\u4f18\u5148\u76f4\u63a5\u7ed9\u4e00\u6761**\u53ea\u8bfb git \u547d\u4ee4\u884c**\uff1a"
+         "{\"cmdline\":\"git status -sb\",\"explanation\":\"\u4e00\u53e5\u8bf4\u660e\",\"confidence\":0.9}\u3002"
+         "\u53ea\u5141\u8bb8\u53ea\u8bfb\u5b50\u547d\u4ee4\uff08status/log/show/diff/branch/remote/tag -l/"
+         "rev-parse/describe/shortlog/blame/for-each-ref/ls-files/config --get*/stash list/reflog\uff09\uff0c"
+         "\u4e0d\u8981\u5e26\u4efb\u4f55\u5199\u64cd\u4f5c\u9009\u9879\u3002\n";
+    s += "4. \u9700\u8981\u5199\u64cd\u4f5c\uff08\u63d0\u4ea4/\u63a8\u9001/\u5408\u5e76/\u91cd\u7f6e\u7b49\uff09\u65f6\uff0c"
+         "\u7528\u4e0b\u8868\u7684\u547d\u4ee4 key\uff08\u5b57\u6bb5 command\uff09\uff0c\u4e0d\u8981\u81ea\u5df1\u7f16 git \u547d\u4ee4\u884c\u3002\n";
+    s += "5. **\u4e0d\u8981**\u9009\u9700\u8981\u56fe\u5f62\u754c\u9762\u4ea4\u4e92\u7684\u5185\u90e8\u547d\u4ee4"
+         "\uff08key \u4ee5 app. / commit.squash / inspect.status \u7b49\u9700\u7a97\u53e3\u7684\uff09\uff1b"
+         "\u5b83\u4eec\u4e0d\u4f1a\u88ab\u81ea\u52a8\u6267\u884c\u3002\n";
+    s += "6. \u82e5\u6ca1\u6709\u547d\u4ee4\u80fd\u5b8c\u6210\u7528\u6237\u610f\u56fe\uff0c"
          "\u8fd4\u56de {\"command\":\"none\",\"explanation\":\"\u539f\u56e0\"}\u3002\n";
-    s += "5. \u5371\u9669\u9009\u9879\uff08\u6807\u3010\u5371\u9669\u3011\uff09\u53ea\u5728\u7528\u6237"
+    s += "7. \u5371\u9669\u9009\u9879\uff08\u6807\u3010\u5371\u9669\u3011\uff09\u53ea\u5728\u7528\u6237"
          "\u660e\u786e\u8981\u6c42\u65f6\u624d\u7f6e 1\u3002\n\n";
     s += "\u547d\u4ee4\u8868\uff1a\n";
 
@@ -208,6 +425,11 @@ std::string BuildPlannerSystemPrompt(const TitleResolver& titleRes) {
     return s;
 }
 
+// 生效的系统提示词：AI 设置里填了就用它（用户可以完全改写行为），否则用内置默认
+std::string EffectiveSystemPrompt(const AiConfig& cfg, const TitleResolver& titleRes) {
+    if (!cfg.systemPrompt.empty()) return WideToUtf8(cfg.systemPrompt);
+    return BuildPlannerSystemPrompt(titleRes);
+}
 std::string BuildPlannerUserPrompt(const std::wstring& userText, const std::wstring& repoRoot,
                                    const std::wstring& branch, const std::vector<std::wstring>& paths) {
     std::string s = "\u4e0a\u4e0b\u6587\uff1a\n";
@@ -235,9 +457,20 @@ AiPlan ParsePlanReply(const std::string& replyContent) {
     plan.rawReply = W(replyContent);
     const std::string json = StripCodeFence(replyContent);
 
+    // 二选一：{"cmdline":"git status -sb"}（直接给命令）或 {"command":"<命令表 key>"}
+    std::string rawCmd;
     std::string cmd;
-    if (!JsonFindString(json, "command", &cmd)) {
-        plan.error = L"模型回复里没有 command 字段（可能不是 JSON）";
+    const bool hasCmdline = JsonFindString(json, "cmdline", &rawCmd) && !Trim(W(rawCmd)).empty();
+    if (!hasCmdline && !JsonFindString(json, "command", &cmd)) {
+        plan.error = L"模型回复里既没有 cmdline 也没有 command 字段（可能不是 JSON）";
+        return plan;
+    }
+    if (hasCmdline) {
+        plan.cmdline = Trim(W(rawCmd)) == L"none" ? std::string() : rawCmd;
+        JsonFindStringMap(json, "params", &plan.params);
+        std::string expl;
+        if (JsonFindString(json, "explanation", &expl)) plan.explanation = W(expl);
+        plan.ok = true;
         return plan;
     }
     if (cmd == "none" || cmd.empty()) {
@@ -309,6 +542,119 @@ AiPlan GeneratePlan(const AiConfig& cfg, const std::string& systemPrompt, const 
     parsed.requestBody = plan.requestBody;
     return parsed;
 }
+// ---------------------------------------------- AI 直出命令（只读白名单）
+// "方案应该直接输出命令"：允许模型给一条**只读** git 命令并直接执行。
+// 写操作（提交/推送/合并/重置…）一律仍走命令表，避免模型一句话就改写仓库。
+const CommandSpec& ReadOnlySpec() {
+    static const CommandSpec kSpec{0, "ai.cmdline", GroupId::Inspect, IDS_TITLE_AI, 0, kSelAny, true,
+                                   Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
+                                   ExecKind::CliPanel, nullptr, 0, nullptr};
+    return kSpec;
+}
+
+std::wstring JoinArgvForDisplay(const std::vector<std::wstring>& argv) {
+    std::wstring s = L"git";
+    for (const auto& a : argv) {
+        s += L' ';
+        s += QuoteArg(a);
+    }
+    return s;
+}
+
+bool SplitCommandLine(const std::wstring& line, std::vector<std::wstring>* out, std::wstring* why) {
+    std::wstring cur;
+    wchar_t quote = 0;
+    bool any = false;
+    for (const wchar_t c : line) {
+        if (c == L'\r' || c == L'\n' || c == L'\0') {
+            if (why) *why = L"命令里不能有换行";
+            return false;
+        }
+        if (quote) {
+            if (c == quote) { quote = 0; continue; }
+            cur += c;
+            continue;
+        }
+        if (c == L'"' || c == L'\'') { quote = c; any = true; continue; }
+        if (c == L' ' || c == L'\t') {
+            if (!cur.empty() || any) { out->push_back(cur); cur.clear(); any = false; }
+            continue;
+        }
+        cur += c;
+    }
+    if (quote) {
+        if (why) *why = L"引号没有闭合";
+        return false;
+    }
+    if (!cur.empty() || any) out->push_back(cur);
+    return true;
+}
+
+bool IsPureReadOnlySubcommand(const std::wstring& sub) {
+    static const wchar_t* kOk[] = {L"status",   L"log",        L"show",       L"diff",      L"rev-parse",
+                                   L"rev-list", L"describe",   L"shortlog",   L"blame",     L"for-each-ref",
+                                   L"ls-files", L"ls-tree",    L"cat-file",   L"reflog",    L"name-rev",
+                                   L"merge-base", L"count-objects", L"whatchanged", L"grep", L"diff-tree",
+                                   L"diff-index", L"diff-files", L"version", L"help", L"var"};
+    for (const wchar_t* k : kOk) {
+        if (sub == k) return true;
+    }
+    return false;
+}
+
+bool IsReadOnlyWithGuard(const std::vector<std::wstring>& args) {
+    if (args.size() < 2) return false;
+    const std::wstring& sub = args[1];
+    auto has = [&](std::initializer_list<const wchar_t*> names) {
+        for (size_t i = 2; i < args.size(); ++i) {
+            for (const wchar_t* n : names) {
+                if (args[i] == n) return true;
+            }
+        }
+        return false;
+    };
+    auto firstIs = [&](std::initializer_list<const wchar_t*> names) {
+        if (args.size() < 3) return false;
+        for (const wchar_t* n : names) {
+            if (args[2] == n) return true;
+        }
+        return false;
+    };
+    if (sub == L"branch") {
+        for (size_t i = 2; i < args.size(); ++i) {
+            if (!args[i].empty() && args[i][0] != L'-') return false;
+        }
+        return true;
+    }
+    if (sub == L"tag") return has({L"-l", L"--list"});
+    if (sub == L"remote") return firstIs({L"-v", L"--verbose", L"show", L"get-url"});
+    if (sub == L"stash") return firstIs({L"list", L"show"});
+    if (sub == L"config") return firstIs({L"--get", L"--get-all", L"--get-regexp", L"--list", L"-l"});
+    if (sub == L"worktree") return firstIs({L"list"});
+    if (sub == L"submodule") return firstIs({L"status", L"summary"});
+    return false;
+}
+
+bool ParseReadOnlyGitCommand(const std::wstring& line, std::vector<std::wstring>* argv, std::wstring* why) {
+    std::vector<std::wstring> parts;
+    if (!SplitCommandLine(Trim(line), &parts, why)) return false;
+    if (parts.size() < 2) {
+        if (why) *why = L"至少要给出 git 子命令（例如 git status）";
+        return false;
+    }
+    const std::wstring exe = ToLowerAscii(parts[0]);
+    if (exe != L"git" && exe != L"git.exe") {
+        if (why) *why = L"只允许 git 命令，收到的是：" + parts[0];
+        return false;
+    }
+    const std::wstring sub = ToLowerAscii(parts[1]);
+    if (!IsPureReadOnlySubcommand(sub) && !IsReadOnlyWithGuard(parts)) {
+        if (why) *why = L"不是允许的只读子命令（写操作请用命令表）：" + parts[1];
+        return false;
+    }
+    argv->assign(parts.begin() + 1, parts.end());
+    return true;
+}
 
 // ================================================= 计划 → 可执行命令（安全闸门）
 PlanToCommandResult PlanToCommand(const AiPlan& plan, const std::wstring& repoRoot,
@@ -317,6 +663,23 @@ PlanToCommandResult PlanToCommand(const AiPlan& plan, const std::wstring& repoRo
     if (plan.noCommand) {
         res.error = plan.explanation.empty() ? L"\u6a21\u578b\u8ba4\u4e3a\u6ca1\u6709\u5408\u9002\u7684\u547d\u4ee4"
                                              : plan.explanation;
+        return res;
+    }
+    // ---- 路线 A：模型直接给了命令（cmdline）----
+    // 只放行**只读** git 命令：这是"方案直接输出命令"的安全边界，写操作仍必须走命令表。
+    if (!plan.cmdline.empty()) {
+        std::vector<std::wstring> argv;
+        std::wstring why;
+        if (!ParseReadOnlyGitCommand(W(plan.cmdline), &argv, &why)) {
+            res.error = L"模型想直接执行命令，但没通过只读检查：" + why + L"\n（原始命令：" + W(plan.cmdline) + L"）";
+            return res;
+        }
+        res.ok = true;
+        res.spec = &ReadOnlySpec();
+        res.built.argvList = {argv};
+        res.built.cwd = repoRoot;
+        res.built.display = JoinArgvForDisplay(argv);
+        res.built.notes.push_back(L"由 AI 直接给出的只读命令");
         return res;
     }
     const CommandSpec* spec = FindCommandByKey(plan.commandKey);

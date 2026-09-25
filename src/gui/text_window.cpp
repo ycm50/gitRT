@@ -31,7 +31,7 @@ LRESULT CALLBACK TextProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CREATE: {
             st->sub = MakeChild(hwnd, WC_STATICW, st->subtitle, WS_CHILD | WS_VISIBLE | SS_LEFT,
                                 0, 0, Th().fontSmall);
-            st->bodyEdit = MakeChild(hwnd, WC_EDITW, st->body,
+            st->bodyEdit = MakeChild(hwnd, WC_EDITW, ToCrlf(st->body),
                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE |
                                          ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_BORDER,
                                      WS_EX_CLIENTEDGE, IDC_TXT_BODY, Th().fontMono);
@@ -113,7 +113,8 @@ void EnsureTextClass() {
     wc.lpfnWndProc = TextProc;
     wc.hInstance = ::GetModuleHandleW(nullptr);
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIcon = GitRTAppIcon();
+    wc.hIconSm = GitRTAppIcon();
     wc.lpszClassName = kTextWindowClass;
     ::RegisterClassExW(&wc);
     done = true;
