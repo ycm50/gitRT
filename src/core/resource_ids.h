@@ -91,6 +91,18 @@
 #define IDS_FLAG_CLONE_BRANCH      3035   // 指定分支 --branch=<name>
 #define IDS_FLAG_CLONE_NO_TAGS     3036   // 不拉取标签 --no-tags
 #define IDS_FLAG_CLONE_FILTER      3037   // 部分克隆 --filter=<spec>
+// ---- 标签 / 发布
+#define IDS_FLAG_TAG_ANNOTATED     3044   // 附注标签 (-a -m)
+#define IDS_FLAG_TAG_FORCE         3045   // 覆盖同名标签 (-f)【危险】
+#define IDS_FLAG_TAG_TARGET        3046   // 目标修订 --target=<rev>
+#define IDS_FLAG_PUSH_ALL_TAGS     3047   // 推送全部标签 (--tags)
+#define IDS_FLAG_REMOTE_VALUE      3048   // 远端名（值）
+#define IDS_FLAG_DELETE_REMOTE     3049   // 同时删除远端标签
+#define IDS_FLAG_RELEASE_TITLE     3050   // 发布标题 --title
+#define IDS_FLAG_RELEASE_NOTES     3051   // 发布说明 --notes
+#define IDS_FLAG_GENERATE_NOTES    3052   // 自动生成说明 --generate-notes
+#define IDS_FLAG_DRAFT             3053   // 草稿 --draft
+#define IDS_FLAG_PRERELEASE        3054   // 预发布 --prerelease
 #define IDS_TERM_GIT_BASH          3040
 #define IDS_TERM_POWERSHELL        3041
 #define IDS_TERM_WT                3042
@@ -220,6 +232,100 @@
 // ---- 自动抓取（首选项里的"持续跟踪"）
 #define IDS_AI_SET_LABEL_AUTOFETCH     5334
 #define IDS_AI_SET_AUTOFETCH_HINT      5335
+
+// ---- 标签与发布（tag.* / release.*）
+#define IDS_CMD_TAG_LIST         2307
+#define IDS_CMD_TAG_CREATE       2308
+#define IDS_CMD_TAG_PUSH         2309
+#define IDS_CMD_TAG_DELETE       2310
+#define IDS_CMD_RELEASE_LIST     2311
+#define IDS_CMD_RELEASE_CREATE   2312
+// 标签/发布面板用的提示串
+#define IDS_TAG_PANEL_HINT       5660   // 「标签」面板顶部的说明
+#define IDS_TAG_EMPTY            5661   // 一个标签都没有
+#define IDS_TAG_NEED_NAME        5662   // 先填标签名
+#define IDS_TAG_ANNOTATED_HINT   5663   // 附注标签说明
+#define IDS_TAG_FORCE_HINT       5664   // 覆盖同名标签说明
+#define IDS_TAG_PUSH_ALL_HINT    5665   // --tags 会推全部
+#define IDS_TAG_DELETE_WARN      5666   // 删除标签的告警
+#define IDS_RELEASE_NEED_GH      5667   // 没装 gh
+#define IDS_RELEASE_NEED_TAG     5668   // 标签必须先存在
+#define IDS_RELEASE_DRAFT_HINT   5669   // 草稿说明
+#define IDS_RELEASE_PUBLIC_HINT  5670   // 公开可见
+
+// ---- 标签窗口（阶段二：src/gui/tag_window.cpp，专用 GUI 窗口）  5671-5711
+#define IDS_TITLE_TAG            5671   // 窗口标题
+#define IDS_TG_LBL_LIST          5672   // 列表上方说明
+#define IDS_TG_COL_NAME          5673
+#define IDS_TG_COL_HASH          5674
+#define IDS_TG_COL_TYPE          5675
+#define IDS_TG_COL_DATE          5676
+#define IDS_TG_COL_SUBJECT       5677
+#define IDS_TG_COL_REMOTE        5678
+#define IDS_TG_TYPE_ANNOTATED    5679   // 类型列：附注
+#define IDS_TG_TYPE_LIGHT        5680   // 类型列：轻量
+#define IDS_TG_REMOTE_YES        5681   // 远端列：有
+#define IDS_TG_REMOTE_NO         5682   // 远端列：无
+#define IDS_TG_LBL_CREATE        5683
+#define IDS_TG_LBL_NAME          5684
+#define IDS_TG_LBL_TARGET        5685
+#define IDS_TG_LBL_MESSAGE       5686
+#define IDS_TG_ANNOTATED         5687   // 复选：附注标签
+#define IDS_TG_FORCE             5688   // 复选：覆盖同名
+#define IDS_TG_LBL_PUSH          5689
+#define IDS_TG_PUSH_ALL          5690   // 复选：推送全部
+#define IDS_TG_LBL_DELETE        5691
+#define IDS_TG_DEL_LOCAL         5692   // 复选：删本地
+#define IDS_TG_LBL_REMOTE        5693   // 远端名（值）
+#define IDS_TG_DEL_REMOTE        5694   // 复选：也删远端
+#define IDS_TG_BTN_CREATE        5695
+#define IDS_TG_BTN_PUSH          5696
+#define IDS_TG_BTN_DELETE        5697
+#define IDS_TG_SEL_NONE          5698
+#define IDS_TG_SEL_OK            5699   // {name} / {hash} / {kind}
+#define IDS_TG_RUNNING           5700
+#define IDS_TG_DONE              5701
+#define IDS_TG_FAILED            5702   // {msg}
+#define IDS_TG_NO_TAGS           5703
+#define IDS_TG_LBL_LOG           5704
+#define IDS_TG_CONFIRM_TITLE     5705
+#define IDS_TG_CONFIRM_BODY      5706   // {cmds} / {warns}
+#define IDS_TG_DEL_CONFIRM_TITLE 5707
+#define IDS_TG_DEL_CONFIRM_BODY  5708   // {name} / {cmds}
+#define IDS_TG_NEED_LOCAL        5709   // 只删远端不被 core 支持
+#define IDS_TG_NEED_ONE          5710
+#define IDS_TG_CREATED_OK        5711   // {name}
+#define IDS_TG_PLAN_OK           5712   // 计划已生成（预览框里就是要执行的命令）
+
+// ---- 发布窗口（阶段二：src/gui/release_window.cpp）  5720-5747
+#define IDS_TITLE_RELEASE        5720
+#define IDS_REL_LBL_LIST         5721
+#define IDS_REL_COL_TAG          5722
+#define IDS_REL_COL_NAME         5723
+#define IDS_REL_COL_DATE         5724
+#define IDS_REL_COL_FLAGS        5725
+#define IDS_REL_DRAFT_TAG        5726   // 状态列：草稿
+#define IDS_REL_PRE_TAG          5727   // 状态列：预发布
+#define IDS_REL_LBL_CREATE       5728
+#define IDS_REL_LBL_TAG          5729
+#define IDS_REL_LBL_TITLE        5730
+#define IDS_REL_LBL_NOTES        5731
+#define IDS_REL_GENERATE         5732   // 复选：--generate-notes
+#define IDS_REL_DRAFT_CHK        5733   // 复选：--draft
+#define IDS_REL_PRE_CHK          5734   // 复选：--prerelease
+#define IDS_REL_LBL_ASSETS       5735
+#define IDS_REL_BTN_PICK         5736   // 选择文件…
+#define IDS_REL_BTN_REMOVE       5737   // 移除所选
+#define IDS_REL_LBL_LOG          5738
+#define IDS_REL_BTN_CREATE       5739
+#define IDS_REL_SEL_NONE         5740
+#define IDS_REL_SEL_OK           5741   // {tag}
+#define IDS_REL_RUNNING          5742
+#define IDS_REL_DONE             5743
+#define IDS_REL_FAILED           5744   // {msg}
+#define IDS_REL_NO_RELEASES      5745
+#define IDS_REL_CONFIRM_TITLE    5746
+#define IDS_REL_CONFIRM_BODY     5747   // {cmds} / {warns}
 
 // ---- 还原到提交（history.restore）
 #define IDS_CMD_HISTORY_RESTORE  2109

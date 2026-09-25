@@ -31,6 +31,8 @@ struct AppState {
     HWND         squash = nullptr;   // 合并提交窗口（单例）
     HWND         restore = nullptr;  // 还原到提交窗口（单例）
     HWND         remote = nullptr;   // 远端分支与地址窗口（单例）
+    HWND         tags = nullptr;     // 标签窗口（单例，命令 2308/2309/2310）
+    HWND         releases = nullptr; // 发布窗口（单例，命令 2312）
     bool         autoFetchBusy = false;   // 自动抓取进行中（防重入）
 };
 AppState& App();
@@ -105,6 +107,10 @@ bool BuildViewText(CommandId id, const std::vector<std::wstring>& paths,
 void ShowSquashWindow(HWND owner);   // 合并提交：复选连续的提交 → 合并成一条
 void ShowRestoreWindow(HWND owner);  // 还原到提交：只读检出 / 新建分支 / 重置
 void ShowRemoteWindow(HWND owner);   // 远端分支与地址：抓取 / 检出 / 跟踪 / 设上游 / 改地址
+// 标签窗口（阶段二）：列表 + 新建（轻量/附注/覆盖/目标修订）+ 推送（单个/全部）+ 删除（本地/远端）
+void ShowTagWindow(HWND owner);
+// 发布窗口（阶段二）：gh 能力探测 + Release 列表 + 创建发布（标题/说明/草稿/预发布/附件）
+void ShowReleaseWindow(HWND owner);
 // AI 配置变化通知（ShowSettingsWindow 的 notify 会收到）
 constexpr UINT WM_GRT_AI_CONFIG_RELOAD = WM_APP + 65;
     // 合并提交完成（lParam = new SquashResult，接收方负责 delete）
@@ -115,6 +121,10 @@ constexpr UINT WM_GRT_AI_CONFIG_RELOAD = WM_APP + 65;
     constexpr UINT WM_GRT_RST_DONE = WM_APP + 73;
     constexpr UINT WM_GRT_RM_DONE = WM_APP + 74;
     constexpr UINT WM_GRT_AUTOFETCH_DONE = WM_APP + 75;   // lParam = new std::wstring(错误，空=成功)
+    // 标签窗口 / 发布窗口：工作线程完成（照 remote_window 的写法，lParam 恒为 nullptr，
+    // 低 8 位 = 哪个操作，0x100 = 失败；失败原因由线程先写进日志，窗口用最后一行回填状态行）
+    constexpr UINT WM_GRT_TAG_DONE = WM_APP + 76;
+    constexpr UINT WM_GRT_REL_DONE = WM_APP + 77;
 
 // 进度窗口：顺序执行 BuiltCommand 的多条命令，支持取消
 void RunBuiltCommand(HWND owner, const CommandSpec& spec, const BuiltCommand& cmd);
@@ -182,6 +192,31 @@ struct CliOptions {
     std::wstring remoteSetUrl;    // --remote-set-url name=url
     std::wstring remoteRemove;    // --remote-remove name
     bool         forceRestore = false;   // --force（脏工作区也允许 hard 重置）
+    // ---- 标签 / 发布（脚本化入口；命令表编号 2307-2312）
+    // workKind：CLI 分派的唯一权威。选项名有歧义时（例如只给 --remote 这种
+    // 修饰选项、没给 --tag-push/--tag-delete），不能靠"某个字段非空"猜意图。
+    enum class CliWork { None, TagList, TagCreate, TagPush, TagDelete, ReleaseList, ReleaseCreate };
+    CliWork      workKind = CliWork::None;
+    bool         tagList = false;        // --tag-list
+    std::wstring tagCreateName;          // --tag-create <name>
+    std::wstring tagMessage;             // --message <m>（附注标签的信息；--squash 也复用它）
+    bool         tagAnnotated = false;   // --annotated
+    std::wstring tagTarget;              // --target <rev>（空 = HEAD）
+    bool         tagForce = false;       // --force（覆盖同名标签 / 真删标签）
+    bool         tagPushAll = false;     // --all（推送全部标签）
+    std::wstring tagPushName;            // --tag-push <name>
+    std::wstring tagDeleteName;          // --tag-delete <name>
+    bool         tagDeleteRemote = false; // --remote（远端上的同名标签也删）
+    std::wstring tagRemoteName;          // --remote <r>（默认 origin）
+    bool         releaseList = false;    // --release-list
+    std::wstring releaseTag;             // --release-create <tag>
+    std::wstring releaseTitle;           // --title <t>
+    std::wstring releaseNotes;           // --notes <n>
+    bool         releaseGenerateNotes = false;  // --generate-notes
+    bool         releaseDraft = false;          // --draft
+    bool         releasePrerelease = false;     // --prerelease
+    bool         releasePushTag = false;        // --push-tag
+    std::vector<std::wstring> releaseAssets;    // --asset <file>（可重复）
     bool         hasWork = false;  // 是否走 CLI 分支（不建窗口）
 };
 int RunCliCommand(const CliOptions& o);
@@ -190,6 +225,8 @@ int RunCliListCommands(const CliOptions& o);
 int RunCliSquash(const CliOptions& o);   // --squash：脚本化的"合并连续提交"
 int RunCliRemote(const CliOptions& o);   // --remote-info/--set-upstream：远端基线与上游
 int RunCliRestore(const CliOptions& o);  // --restore：按提交还原（检出/新建分支/重置）
+int RunCliTag(const CliOptions& o);      // --tag-*：标签列表/新建/推送/删除
+int RunCliRelease(const CliOptions& o);  // --release-*：发布列表/创建（GitHub，走 gh）
 
 }  // namespace grt::gui
 

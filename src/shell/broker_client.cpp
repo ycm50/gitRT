@@ -34,6 +34,17 @@ std::wstring CurrentUserSid() {
     return sid;
 }
 
+// 从 HKCU\Software\GitRT 读一个 REG_SZ 值（install.ps1 会写 ExePath / InstallDir）。
+// 用途见 GuiExecutableCandidates()：DLL 来自旧位置、或安装目录被移动时，靠它找回真实的 exe。
+std::wstring ReadGitRtRegString(const wchar_t* valueName) {
+    wchar_t buf[1024]{};
+    DWORD cb = sizeof(buf);
+    if (::RegGetValueW(HKEY_CURRENT_USER, L"Software\\GitRT", valueName, RRF_RT_REG_SZ, nullptr, buf,
+                       &cb) != ERROR_SUCCESS)
+        return {};
+    return std::wstring(buf);
+}
+
 bool TryPipe(const std::wstring& sectionName) {
     const std::wstring pipe = BrokerPipeName();
     if (pipe.empty()) return false;
@@ -54,7 +65,8 @@ bool TryPipe(const std::wstring& sectionName) {
     return true;
 }
 
-bool SpawnGui(const std::wstring& sectionName, std::wstring* usedExe) {
+bool SpawnGui(const std::wstring& sectionName, std::wstring* usedExe, int* triedCount) {
+    if (triedCount) *triedCount = 0;
     // 开发/CI 诊断钩子：设置该环境变量时把参数透传给 GUI（写请求报告后退出），
     // 用于自动化验证"右键 → GUI 参数面板"这条链路（见 tools/test-all.ps1）。
     std::wstring probeArgs;
@@ -66,7 +78,12 @@ bool SpawnGui(const std::wstring& sectionName, std::wstring* usedExe) {
         }
     }
     for (const auto& exe : GuiExecutableCandidates()) {
-        if (!PathExists(exe)) continue;
+        // ★ 每个候选都留痕：以前"候选不存在"是静默 continue，出问题时日志里什么都没有，
+        //   只能靠"某行没出现"反推（2026-09-25 那次「既没有常驻进程…」就是这么查的）。
+        const bool exists = PathExists(exe);
+        GRT_LOGI("shell.ipc", "候选 GUI exe=" << U8(exe) << " 存在=" << (exists ? 1 : 0));
+        if (triedCount) ++*triedCount;
+        if (!exists) continue;
         std::wstring cmd = L"\"" + exe + L"\" --request-section \"" + sectionName + L"\"" + probeArgs;
         STARTUPINFOW si{};
         si.cb = sizeof(si);
@@ -112,7 +129,12 @@ std::vector<std::wstring> GuiExecutableCandidates() {
     // ② 开发目录布局兜底：build/<cfg>/src/shell/ → build/<cfg>/src/gui/GitRT.exe
     add(NormalizePath(moduleDir + L"\\..\\gui\\GitRT.exe"));
     add(NormalizePath(moduleDir + L"\\..\\..\\GitRT.exe"));
-    // ③ per-user 安装目录（§11.5）
+    // ③ 注册表（install.ps1 写的）：DLL 来自旧位置 / 安装目录被移动时，靠它找回真正的 exe
+    const std::wstring regExe = ReadGitRtRegString(L"ExePath");
+    if (!regExe.empty()) add(regExe);
+    const std::wstring regDir = ReadGitRtRegString(L"InstallDir");
+    if (!regDir.empty()) add(JoinPath(regDir, L"GitRT.exe"));
+    // ④ per-user 安装目录（历史布局，§11.5；可能已被卸载删除，留着只作兜底）
     wchar_t local[MAX_PATH]{};
     if (::GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH))
         add(JoinPath(std::wstring(local) + L"\\Programs\\GitRT", L"GitRT.exe"));
@@ -138,9 +160,14 @@ bool ForwardInvoke(const InvokeRequest& req, std::wstring* errorText) {
     if (TryPipe(section)) return true;   // ① 常驻 Broker 优先
 
     std::wstring used;
-    if (SpawnGui(section, &used)) return true;   // ② 直启 GUI（M0 的实际路径）
+    int tried = 0;
+    if (SpawnGui(section, &used, &tried)) return true;   // ② 直启 GUI（M0 的实际路径）
 
-    return fail(L"既没有常驻进程，也无法启动 GitRT.exe（请在 GitRT 里运行自检）");
+    // 候选都落空时把"试过几个位置"说清楚：以前那句"请在 GitRT 里运行自检"在这种情况下
+    // 完全误导（自检根本跑不起来），真实原因通常是安装目录被移动/删除或 DLL 来自旧位置。
+    return fail(L"既没有常驻进程，也无法启动 GitRT.exe（试过 " + std::to_wstring(tried) +
+                L" 个位置都不存在；安装目录可能被移动或删除了，请重新安装 GitRT，"
+                L"或先在 GitRT 里运行自检）");
 }
 
 }  // namespace grt::shell

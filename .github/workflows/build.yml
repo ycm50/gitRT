@@ -222,8 +222,10 @@ jobs:
           $suites = @(
             @{ n = 'test-remote'; f = 'tools/test-remote.ps1' },
             @{ n = 'test-squash'; f = 'tools/test-squash.ps1' },
-            @{ n = 'test-clone';  f = 'tools/test-clone.ps1'  }
-          )
+            @{ n = 'test-clone';  f = 'tools/test-clone.ps1'  },
+            # 标签与发布（脚本存在才跑；gh 缺失时脚本自己 SKIP，不算失败）
+            @{ n = 'test-tag-release'; f = 'tools/test-tag-release.ps1' }
+          ) | Where-Object { Test-Path $_.f }
           $failed = @()
           foreach ($s in $suites) {
             "=== $($s.n) ==="

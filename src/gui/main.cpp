@@ -4,7 +4,9 @@
 
 #include "ai_client.h"
 #include "remote.h"
+#include "release.h"
 #include "restore.h"
+#include "tag.h"
 #include "json_util.h"
 
 #include <shellapi.h>
@@ -596,6 +598,124 @@ int RunSelfTest(HWND mainWnd, const std::wstring& outPath) {
                                                     RestoreMode::NewBranch, L"");
         check(!brPlan.ok, L"\u8fd8\u539f\u8ba1\u5212\uff1a\u65b0\u5efa\u5206\u652f\u6ca1\u7ed9\u540d\u5b57\u88ab\u62d2");
     }
+    // ---- 8g. 标签 / 发布（core 判定）----
+    {
+        const std::wstring git = App().gitExe;
+        const std::wstring repo = App().repoRoot;
+        // 轻量标签：git tag <name> <hash>
+        const TagPlan light = BuildTagPlan(git, repo, L"selftest-lw", L"", false, L"HEAD", false);
+        check(light.ok && !light.annotated && light.commandLines.size() == 1 &&
+                  light.commandLines[0].find(L"git tag selftest-lw ") == 0 &&
+                  light.commandLines[0].find(L"-a") == std::wstring::npos,
+              L"\u6807\u7b7e\u8ba1\u5212\uff1a\u8f7b\u91cf\u6807\u7b7e\u7684\u547d\u4ee4\u5c31\u662f git tag <name> <hash>");
+        // 附注标签：git tag -a <name> -m <msg> <hash>
+        const TagPlan annot = BuildTagPlan(git, repo, L"selftest-an", L"selftest message", true, L"HEAD", false);
+        check(annot.ok && annot.annotated && annot.commandLines.size() == 1 &&
+                  annot.commandLines[0].find(L"git tag -a selftest-an -m ") == 0,
+              L"\u6807\u7b7e\u8ba1\u5212\uff1a\u9644\u6ce8\u6807\u7b7e\u5e26 -a -m");
+        check(annot.ok && annot.commandLines[0].find(L"selftest message") != std::wstring::npos,
+              L"标签计划：附注标签的信息真的进了命令行（-m 后面就是它）");
+        // 非法标签名 / 未知提交必须被拒
+        const TagPlan badName = BuildTagPlan(git, repo, L"bad name", L"", false, L"HEAD", false);
+        check(!badName.ok && badName.error.find(L"\u4e0d\u5408\u6cd5") != std::wstring::npos,
+              L"\u6807\u7b7e\u8ba1\u5212\uff1a\u975e\u6cd5\u6807\u7b7e\u540d\u88ab\u62d2\uff08" + badName.error + L"\uff09");
+        // 阶段二补强：非法写法（含 ..）与空名都必须被拒，且理由必须是中文
+        const TagPlan badDots = BuildTagPlan(git, repo, L"v1..2", L"", false, L"HEAD", false);
+        check(!badDots.ok && badDots.error.find(L"不合法") != std::wstring::npos,
+              L"标签计划：含 .. 的标签名被拒（" + badDots.error + L"）");
+        const TagPlan noName = BuildTagPlan(git, repo, L"", L"", false, L"HEAD", false);
+        check(!noName.ok && noName.error.find(L"请填写标签名") != std::wstring::npos,
+              L"标签计划：空标签名被拒且原因是中文（" + noName.error + L"）");
+        const TagPlan badRev = BuildTagPlan(git, repo, L"selftest-x", L"", false, L"no-such-rev-xyz", false);
+        check(!badRev.ok, L"\u6807\u7b7e\u8ba1\u5212\uff1a\u4e0d\u5b58\u5728\u7684\u76ee\u6807\u63d0\u4ea4\u88ab\u62d2");
+        // 真的执行一次：打完能在清单里看到（附注/轻量都要对）
+        if (light.ok) {
+            const TagResult tr = ApplyTagPlan(git, repo, light, {}, {});
+            check(tr.ok, L"\u6807\u7b7e\u6267\u884c\uff1a\u8f7b\u91cf\u6807\u7b7e\u771f\u7684\u6253\u4e0a\u4e86");
+        }
+        if (annot.ok) {
+            const TagResult tr = ApplyTagPlan(git, repo, annot, {}, {});
+            check(tr.ok, L"\u6807\u7b7e\u6267\u884c\uff1a\u9644\u6ce8\u6807\u7b7e\u771f\u7684\u6253\u4e0a\u4e86");
+        }
+        std::vector<TagInfo> tags;
+        std::wstring terr;
+        const bool loaded = LoadTags(git, repo, &tags, &terr, L"origin");
+        bool sawLight = false, sawAnnot = false;
+        for (const auto& t : tags) {
+            if (t.name == L"selftest-lw") sawLight = !t.annotated;
+            if (t.name == L"selftest-an") sawAnnot = t.annotated;
+            check(!t.onRemote, L"\u6807\u7b7e\u6e05\u5355\uff1a\u6ca1\u6709\u8fdc\u7aef\u65f6 onRemote \u5168\u4e3a false");
+            if (t.onRemote) break;   // 只报一次就够，别把自检报告刷满
+        }
+        check(loaded && sawLight && sawAnnot,
+              L"\u6807\u7b7e\u6e05\u5355\uff1a\u80fd\u8bfb\u5230\u521a\u6253\u7684\u8f7b\u91cf\u4e0e\u9644\u6ce8\u6807\u7b7e");
+        // 附注标签的 hash 必须是**提交**（不是 tag 对象）：与 git rev-parse <tag>^{commit} 一致
+        std::wstring annotHash;
+        for (const auto& t : tags) {
+            if (t.name == L"selftest-an") annotHash = t.hash;
+        }
+        const std::wstring realHash =
+            Trim(W(RunGitSync(git, {L"rev-parse", L"selftest-an^{commit}"}, repo, 30000).out));
+        check(!annotHash.empty() && !realHash.empty() && annotHash == realHash,
+              L"标签清单：附注标签的 hash 已剥到提交（= git rev-parse <tag>^{commit}）");
+        check(sawAnnot, L"标签清单：附注标签 annotated==true（界面「类型」列显示附注）");
+        check(DescribeTags(tags).find(L"\u9644\u6ce8") != std::wstring::npos,
+              L"\u6807\u7b7e\u6e05\u5355\uff1a\u9762\u677f\u6587\u672c\u6807\u51fa\u4e86\u300c\u9644\u6ce8\u300d");
+        // 重复标签：没 force 拒绝、有 force 放行并带 -f
+        const TagPlan dup = BuildTagPlan(git, repo, L"selftest-lw", L"", false, L"HEAD", false);
+        check(!dup.ok && dup.forceNeeded && dup.error.find(L"force") != std::wstring::npos,
+              L"\u6807\u7b7e\u8ba1\u5212\uff1a\u91cd\u590d\u6807\u7b7e\u6ca1 force \u88ab\u62d2");
+        const TagPlan forced = BuildTagPlan(git, repo, L"selftest-lw", L"", false, L"HEAD", true);
+        check(forced.ok && !forced.commandLines.empty() &&
+                  forced.commandLines[0].find(L"git tag -f selftest-lw") == 0,
+              L"\u6807\u7b7e\u8ba1\u5212\uff1a\u52a0\u4e86 force \u5c31\u5e26 -f");
+        check(forced.ok && !forced.warnings.empty(),
+              L"标签计划：force=true 会给出「这个标签会被移动」的告警");
+        // 推送 / 删除（删除是破坏性：destructive=true 且两条命令）
+        // ★ 自检仓库默认没有远端，而"推到哪个远端"必须校验；这里临时加一个**本地路径**远端，
+        //   只为满足校验（自检不做任何网络操作；仓库随后整个删掉）。
+        const std::wstring fakeRemote = GetModuleDir() + L"\\selftest-tag-fake-origin.git";
+        RunGitSync(git, {L"remote", L"add", L"origin", fakeRemote}, repo, 30000);
+        const TagPlan pushOne = BuildPushTagPlan(git, repo, L"selftest-lw", false, L"");
+        check(pushOne.ok && !pushOne.commandLines.empty() &&
+                  pushOne.commandLines[0] == L"git push origin selftest-lw",
+              L"\u6807\u7b7e\u8ba1\u5212\uff1a\u63a8\u9001\u5355\u4e2a\u6807\u7b7e\u7684\u547d\u4ee4\u5bf9");
+        const TagPlan pushAll = BuildPushTagPlan(git, repo, L"", true, L"");
+        check(pushAll.ok && !pushAll.warnings.empty() &&
+                  pushAll.commandLines[0] == L"git push origin --tags",
+              L"\u6807\u7b7e\u8ba1\u5212\uff1a--all \u63a8\u5168\u90e8\u4e14\u6709\u544a\u8b66");
+        const TagPlan del = BuildDeleteTagPlan(git, repo, L"selftest-lw", true, L"");
+        check(del.ok && del.destructive && del.commandLines.size() == 2 &&
+                  del.commandLines[0] == L"git tag -d selftest-lw" &&
+                  del.commandLines[1] == L"git push origin :refs/tags/selftest-lw",
+              L"\u6807\u7b7e\u8ba1\u5212\uff1a\u5220\u9664\u662f\u7834\u574f\u6027\u4e14\u672c\u5730+\u8fdc\u7aef\u4e24\u6761\u547d\u4ee4");
+        const TagPlan delMissing = BuildDeleteTagPlan(git, repo, L"no-such-tag-xyz", false, L"");
+        check(!delMissing.ok, L"\u6807\u7b7e\u8ba1\u5212\uff1a\u5220\u4e0d\u5b58\u5728\u7684\u6807\u7b7e\u88ab\u62d2");
+
+        // 发布：走 gh（本机通常没装）——没装就必须拒绝，且提示怎么装
+        const GhInfo gh = DetectGh();
+        std::vector<ReleaseEntry> rels;
+        std::wstring rerr;
+        const bool relOk = LoadReleases(git, repo, &rels, &rerr);
+        check(relOk || !rerr.empty(),
+              L"\u53d1\u5e03\u6e05\u5355\uff1a\u4e0d\u53ef\u7528\u65f6\u8fd4\u56de\u7a7a\u5217\u8868 + \u4e2d\u6587\u539f\u56e0\uff08\u4e0d\u5d29\uff09");
+        const ReleasePlan rel = BuildReleasePlan(git, repo, L"selftest-lw", L"", L"", false, false,
+                                                 false, {}, false);
+        if (!gh.available) {
+            check(!rel.ok && (rel.error.find(L"gh") != std::wstring::npos ||
+                              rel.error.find(L"GitHub CLI") != std::wstring::npos),
+                  L"\u53d1\u5e03\u8ba1\u5212\uff1a\u6ca1\u88c5 gh \u65f6\u62d2\u7edd\u5e76\u8bf4\u660e\u600e\u4e48\u88c5\uff08" +
+                      rel.error + L"\uff09");
+        } else {
+            check(rel.ok, L"\u53d1\u5e03\u8ba1\u5212\uff1agh \u53ef\u7528\u65f6\u80fd\u6784\u9020\uff08" + rel.error + L"\uff09");
+        }
+        // 标签不存在 → 无论有没有 gh 都必须拒绝（这里用当前仓库必然不存在的名字）
+        const ReleasePlan relBad = BuildReleasePlan(git, repo, L"no-such-tag-xyz", L"", L"", false,
+                                                    false, false, {}, false);
+        check(!relBad.ok && !relBad.error.empty(),
+              L"\u53d1\u5e03\u8ba1\u5212\uff1a\u6807\u7b7e\u4e0d\u5b58\u5728\u65f6\u62d2\u7edd\u5e76\u7ed9\u4e2d\u6587\u539f\u56e0\uff08" +
+                  relBad.error + L"\uff09");
+    }
             App().repoRoot = savedRepo;
             App().gitExe = savedGit;
             rmdirRepo();
@@ -652,7 +772,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             cli.squashHashes = nextArg(&i);
             cli.hasWork = true;
         } else if (a == L"--message") {
-            cli.squashMessage = nextArg(&i);        } else if (a == L"--remote-info") {
+            cli.squashMessage = nextArg(&i);
+            cli.tagMessage = cli.squashMessage;   // 附注标签的 -m 复用同一个开关
+        } else if (a == L"--remote-info") {
             cli.remoteInfoMode = L"info";
             cli.hasWork = true;
         } else if (a == L"--remote-fetch") {
@@ -679,6 +801,61 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             cli.restoreBranch = nextArg(&i);
         } else if (a == L"--force") {
             cli.forceRestore = true;
+            cli.tagForce = true;   // 同一个开关：还原用 --force，标签覆盖/删除也用 --force
+        } else if (a == L"--tag-list") {
+            cli.tagList = true;
+            cli.workKind = CliOptions::CliWork::TagList;
+            cli.hasWork = true;
+        } else if (a == L"--tag-create") {
+            cli.tagCreateName = nextArg(&i);
+            cli.workKind = CliOptions::CliWork::TagCreate;
+            cli.hasWork = true;
+        } else if (a == L"--annotated") {
+            cli.tagAnnotated = true;
+        } else if (a == L"--target") {
+            cli.tagTarget = nextArg(&i);
+        } else if (a == L"--tag-push") {
+            cli.tagPushName = nextArg(&i);
+            cli.workKind = CliOptions::CliWork::TagPush;
+            cli.hasWork = true;
+        } else if (a == L"--all") {
+            cli.tagPushAll = true;
+        } else if (a == L"--tag-delete") {
+            cli.tagDeleteName = nextArg(&i);
+            cli.workKind = CliOptions::CliWork::TagDelete;
+            cli.hasWork = true;
+        } else if (a == L"--remote") {
+            // 两种用法：--tag-delete <name> --remote（远端也删，用默认远端）
+            //            --tag-push/--tag-delete … --remote <r>（指定远端名）
+            const std::wstring v = (i + 1 < argc) ? std::wstring(argv[i + 1]) : std::wstring();
+            if (!v.empty() && v[0] != L'-') {
+                cli.tagRemoteName = nextArg(&i);
+            } else {
+                cli.tagDeleteRemote = true;
+            }
+        } else if (a == L"--release-list") {
+            cli.releaseList = true;
+            cli.workKind = CliOptions::CliWork::ReleaseList;
+            cli.hasWork = true;
+        } else if (a == L"--release-create") {
+            cli.releaseTag = nextArg(&i);
+            cli.workKind = CliOptions::CliWork::ReleaseCreate;
+            cli.hasWork = true;
+        } else if (a == L"--title") {
+            cli.releaseTitle = nextArg(&i);
+        } else if (a == L"--notes") {
+            cli.releaseNotes = nextArg(&i);
+        } else if (a == L"--generate-notes") {
+            cli.releaseGenerateNotes = true;
+        } else if (a == L"--draft") {
+            cli.releaseDraft = true;
+        } else if (a == L"--prerelease") {
+            cli.releasePrerelease = true;
+        } else if (a == L"--push-tag") {
+            cli.releasePushTag = true;
+        } else if (a == L"--asset") {
+            const std::wstring v = nextArg(&i);
+            if (!v.empty()) cli.releaseAssets.push_back(v);
         } else if (a == L"--list-commands") {
             cli.listCommands = true;
             cli.hasWork = true;
@@ -709,6 +886,12 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         else if (!cli.remoteInfoMode.empty() || !cli.setUpstream.empty() || !cli.remoteAdd.empty() ||
                  !cli.remoteSetUrl.empty() || !cli.remoteRemove.empty()) rc = RunCliRemote(cli);
         else if (!cli.restoreHash.empty()) rc = RunCliRestore(cli);
+        else if (cli.workKind == CliOptions::CliWork::TagList ||
+                 cli.workKind == CliOptions::CliWork::TagCreate ||
+                 cli.workKind == CliOptions::CliWork::TagPush ||
+                 cli.workKind == CliOptions::CliWork::TagDelete) rc = RunCliTag(cli);
+        else if (cli.workKind == CliOptions::CliWork::ReleaseList ||
+                 cli.workKind == CliOptions::CliWork::ReleaseCreate) rc = RunCliRelease(cli);
         else if (!cli.runKey.empty()) rc = RunCliCommand(cli);
         else rc = RunCliAi(cli);
         LogFlush();

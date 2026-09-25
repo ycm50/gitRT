@@ -140,9 +140,24 @@ void RequestPreview(HWND hwnd, PanelState* st) {
                        reinterpret_cast<LPARAM>(ok ? new std::wstring(body) : nullptr));
     }).detach();
 }
+// 阶段二的标签 / 发布：这四个命令的 GUI 形态是**专用窗口**（tag_window / release_window），
+// 参数面板只当"启动器"——不再拼 argv，也不能因为参数没填就把「执行」禁用掉
+// （否则用户永远点不进窗口）。分派见下面 DoExecute 的 switch。
+bool UsesDedicatedWindow(CommandId id) {
+    switch (id) {
+        case IDS_CMD_TAG_CREATE:
+        case IDS_CMD_TAG_PUSH:
+        case IDS_CMD_TAG_DELETE:
+        case IDS_CMD_RELEASE_CREATE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void RebuildPreview(PanelState* st) {
     SyncValues(st);
-    if (st->spec.exec == ExecKind::Internal) {
+    if (st->spec.exec == ExecKind::Internal || UsesDedicatedWindow(st->spec.id)) {
         SetText(st->preview, Str(IDS_MSG_INTERNAL_NOTE));
         st->built = BuiltCommand{};
         st->buildMsg.clear();
@@ -202,7 +217,9 @@ void DoExecute(HWND hwnd, PanelState* st) {
     const HWND root = ::GetAncestor(hwnd, GA_ROOT);
     RebuildPreview(st);
 
-    if (st->spec.exec == ExecKind::Internal) {
+    // 标签 / 发布的写操作（阶段二）+ 其余 Internal 命令：统一走 ExecuteInternalCommand
+    // （标签/发布在那里打开**专用窗口**：列表 + 表单 + 命令预览 + 二次确认 + 日志）。
+    if (st->spec.exec == ExecKind::Internal || UsesDedicatedWindow(st->spec.id)) {
         ExecuteInternalCommand(root, st->spec, st->paths, &st->flags);
         return;
     }
