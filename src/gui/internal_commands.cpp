@@ -7,6 +7,8 @@
 #include <fstream>
 
 #include "remote.h"   // 远端基线（提交历史里显示"以远端为基、本地新增在上"）
+#include "tag.h"
+#include "release.h"
 
 namespace grt::gui {
 
@@ -196,7 +198,31 @@ bool BuildViewText(CommandId id, const std::vector<std::wstring>& paths,
             *body = RunGitOut(argv);
             return true;
         }
-        default:
+        case 2307: {   // tag.list —— 标签清单（本地/远端、轻量/附注）
+            std::vector<TagInfo> tags;
+            std::wstring err;
+            LoadTags(App().gitExe, App().repoRoot, &tags, &err);
+            if (titleRes) *titleRes = IDS_CMD_TAG_LIST;
+            *body = err.empty() ? DescribeTags(tags) : (L"读取标签失败：" + err);
+            return true;
+        }
+        case 2311: {   // release.list —— GitHub Release 列表（依赖 gh，缺失时给中文原因）
+            std::vector<ReleaseEntry> rels;
+            std::wstring err;
+            LoadReleases(App().gitExe, App().repoRoot, &rels, &err);
+            if (titleRes) *titleRes = IDS_CMD_RELEASE_LIST;
+            if (!err.empty()) { *body = err; return true; }
+            if (rels.empty()) { *body = Str(IDS_TAG_EMPTY); return true; }
+            std::wstring text;
+            for (const auto& r : rels) {
+                text += r.tag + L"  " + (r.name.empty() ? r.tag : r.name) + L"  " + r.publishedAt;
+                if (r.draft)       text += L"  [草稿]";
+                if (r.prerelease)  text += L"  [预发布]";
+                text += L"\r\n";
+            }
+            *body = text;
+            return true;
+        }        default:
             return false;
     }
 }
@@ -217,6 +243,16 @@ void ExecuteInternalCommand(HWND owner, const CommandSpec& spec, const std::vect
             return;
         case 2110:   // remote.panel —— 远端分支与地址
             ShowRemoteWindow(owner);
+            return;
+        // 标签 / 发布（阶段二）：写操作也有专用 GUI 窗口（列表 + 表单 + 命令预览 + 日志），
+        // 与 2109/2110 同一套打法；参数面板侧的改道见 param_panel.cpp 的 DoExecute。
+        case 2308:   // tag.create —— 打标签
+        case 2309:   // tag.push —— 推送标签
+        case 2310:   // tag.delete —— 删除标签（破坏性，窗口里二次确认）
+            ShowTagWindow(owner);
+            return;
+        case 2312:   // release.create —— 创建发布（gh）
+            ShowReleaseWindow(owner);
             return;
         case 1108: {   // commit.squash —— 合并所选提交（复选列表窗口）
             ShowSquashWindow(owner);

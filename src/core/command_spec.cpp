@@ -82,6 +82,36 @@ constexpr FlagSpec kBranchDeleteFlags[] = {
     {"force", "-D", FlagKind::Dangerous, nullptr, IDS_FLAG_FORCE_DELETE, false, true},
 };
 
+// tag.create：轻量（默认）/ 附注（-a -m，annotated 由界面/CLI 读）/ 覆盖（-f）/ 目标修订
+//   · annotated 是**纯 UI 开关**（gitArg=nullptr）：它决定 argv 形状，不是简单追加一个 flag
+//   · target 是值型 → --target=<rev>，空值不产出（默认 = HEAD）
+constexpr FlagSpec kTagCreateFlags[] = {
+    {"annotated", nullptr,        FlagKind::Toggle,   nullptr, IDS_FLAG_TAG_ANNOTATED, false, false},
+    {"force",     "-f",           FlagKind::Dangerous, nullptr, IDS_FLAG_TAG_FORCE,    false, true},
+    {"target",    "--target={v}", FlagKind::Value,    nullptr, IDS_FLAG_TAG_TARGET,     false, false},
+};
+
+// tag.push：推哪个 / 推全部 / 远端（remote 是纯 UI 值，由界面读出来传给 git push）
+constexpr FlagSpec kTagPushFlags[] = {
+    {"all",    "--tags", FlagKind::Toggle, nullptr, IDS_FLAG_PUSH_ALL_TAGS, false, false},
+    {"remote", nullptr,  FlagKind::Value,  nullptr, IDS_FLAG_REMOTE_VALUE,  false, false},
+};
+
+// tag.delete：远端也删（两个都是纯 UI，由界面/CLI 决定命令形状）
+constexpr FlagSpec kTagDeleteFlags[] = {
+    {"remote",     nullptr, FlagKind::Toggle, nullptr, IDS_FLAG_DELETE_REMOTE, false, false},
+    {"remoteName", nullptr, FlagKind::Value,  nullptr, IDS_FLAG_REMOTE_VALUE,  false, false},
+};
+
+// release.create（gh，不是 git）：标题是必填参数 tag，其余走 flags
+constexpr FlagSpec kReleaseCreateFlags[] = {
+    {"title",          "--title={v}",   FlagKind::Value,  nullptr, IDS_FLAG_RELEASE_TITLE,  false, false},
+    {"notes",          "--notes={v}",   FlagKind::Value,  nullptr, IDS_FLAG_RELEASE_NOTES,  false, false},
+    {"generate-notes", "--generate-notes", FlagKind::Toggle, nullptr, IDS_FLAG_GENERATE_NOTES, false, false},
+    {"draft",          "--draft",       FlagKind::Toggle, nullptr, IDS_FLAG_DRAFT,          false, false},
+    {"prerelease",     "--prerelease",  FlagKind::Toggle, nullptr, IDS_FLAG_PRERELEASE,     false, false},
+};
+
 // inspect.diff
 constexpr FlagSpec kDiffFlags[] = {
     {"staged",    "--staged",    FlagKind::Toggle, nullptr, IDS_FLAG_STAGED,    false, false},
@@ -222,6 +252,30 @@ const CommandSpec kCommands[] = {
     C(1306, "branch.delete", GroupId::Branch, IDS_CMD_BRANCH_DELETE,
       kSelDir | kSelBg, true, Danger::Destructive, ParamKind::ExistingBranch, ParamSource::LocalBranches, "branch",
       ExecKind::CliPanel, kBranchDeleteFlags, 1, "git branch {flags} {branch}"),
+
+    // ------------------------------------------------------------ 标签与发布
+    // 标签（tag.*）与发布（release.*）：
+    //   · 视图类（tag.list / release.list）走 Internal，与 history.* 一致（GUI 窗口里渲染）
+    //   · 有参数的写操作走 CliPanel（参数面板拼 argv，与 branch.delete 同一套路）
+    //   ★ 发布走 gh（GitHub CLI）而不是 git，面板里会把命令原样给用户看（Careful：会公开）
+    C(2307, "tag.list", GroupId::Inspect, IDS_CMD_TAG_LIST,
+      kSelDir | kSelBg, true, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
+      ExecKind::Internal, nullptr, 0, nullptr),
+    C(2308, "tag.create", GroupId::Branch, IDS_CMD_TAG_CREATE,
+      kSelDir | kSelBg, true, Danger::Careful, ParamKind::TagName, ParamSource::None, "name",
+      ExecKind::CliPanel, kTagCreateFlags, 3, "git tag {flags} {name}"),
+    C(2309, "tag.push", GroupId::Branch, IDS_CMD_TAG_PUSH,
+      kSelDir | kSelBg, true, Danger::Careful, ParamKind::TagName, ParamSource::Tags, "name",
+      ExecKind::CliPanel, kTagPushFlags, 2, "git push {flags} {name}"),
+    C(2310, "tag.delete", GroupId::Branch, IDS_CMD_TAG_DELETE,
+      kSelDir | kSelBg, true, Danger::Destructive, ParamKind::TagName, ParamSource::Tags, "name",
+      ExecKind::CliPanel, kTagDeleteFlags, 2, "git tag -d {name}"),
+    C(2311, "release.list", GroupId::Inspect, IDS_CMD_RELEASE_LIST,
+      kSelDir | kSelBg, true, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
+      ExecKind::Internal, nullptr, 0, nullptr),
+    C(2312, "release.create", GroupId::Branch, IDS_CMD_RELEASE_CREATE,
+      kSelDir | kSelBg, true, Danger::Careful, ParamKind::TagName, ParamSource::Tags, "tag",
+      ExecKind::CliPanel, kReleaseCreateFlags, 5, "gh release create {tag} {flags}"),
 
     // ------------------------------------------------------------ 查看
     C(1401, "inspect.log", GroupId::Inspect, IDS_CMD_INSPECT_LOG,

@@ -12,7 +12,8 @@ add_executable(GitRT WIN32 ${GRT_GUI_SOURCES} ${GRT_GUI_RC}
 target_include_directories(GitRT PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_SOURCE_DIR}/src/core")
-target_link_libraries(GitRT PRIVATE gitrt_core comctl32 uxtheme dwmapi ole32 oleaut32 shell32 shlwapi winhttp)
+# comdlg32：发布窗口的"选择文件…"（GetOpenFileNameW，OFN_ALLOWMULTISELECT 多选附件）
+target_link_libraries(GitRT PRIVATE gitrt_core comctl32 comdlg32 uxtheme dwmapi ole32 oleaut32 shell32 shlwapi winhttp)
 target_link_options(GitRT PRIVATE -static -static-libgcc -static-libstdc++)
 
 # 同理（见 src/shell/CMakeLists.txt 的说明）：resources.rc 通过 #include 依赖共享

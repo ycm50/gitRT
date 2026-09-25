@@ -6,6 +6,8 @@
 #include "squash.h"
 #include "remote.h"
 #include "restore.h"
+#include "release.h"
+#include "tag.h"
 #include "gui.h"
 
 #include "ai_client.h"
@@ -569,6 +571,336 @@ int RunCliRestore(const CliOptions& o) {
     GRT_LOGI("cli", "--restore ok mode=" << U8(RestoreModeKey(mode)) << " target=" << U8(plan.shortHash));
     return 0;
 }
+
+// ---------------------------------------------------------------------------
+// 标签（--tag-list / --tag-create / --tag-push / --tag-delete）
+//
+// 与 GUI 的标签面板走**同一套** core 逻辑（BuildTagPlan / ApplyTagPlan / LoadTags），
+// 所以脚本测出来的就是界面会做的事。输出沿用 RunCliRemote 的 key=value 风格。
+// ---------------------------------------------------------------------------
+namespace {
+
+// 把 core 的多行文本逐行写进报告（前缀 + 行），保持脚本好断言
+void DumpTagLines(Sink& sink, const std::string& prefix, const std::wstring& text) {
+    std::wstring cur;
+    for (const wchar_t c : text) {
+        if (c == L'\n') {
+            if (!cur.empty() && cur.back() == L'\r') cur.pop_back();
+            if (!cur.empty()) sink.Line(prefix + WideToUtf8(cur));
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    if (!cur.empty()) sink.Line(prefix + WideToUtf8(cur));
+}
+
+}  // namespace
+
+int RunCliTag(const CliOptions& o) {
+    LogInit();
+    const bool console = AttachParentConsole();
+    Sink sink;
+    sink.path = o.outPath;
+    sink.console = console;
+
+    const std::wstring gitExe = FindGitExecutable();
+    std::wstring repoRoot = o.cwd;
+    if (!repoRoot.empty()) {
+        const RepoProbeResult pr = ProbeRepo(repoRoot);
+        if (pr.IsRepo()) repoRoot = pr.repoRoot;
+    }
+    if (o.workKind == CliOptions::CliWork::None) {
+        sink.Line("[GitRT-TAG]");
+        sink.Line("error=请给一个动作：--tag-list / --tag-create / --tag-push / --tag-delete");
+        sink.Line("ok=0");
+        sink.Flush();
+        return 1;
+    }
+
+    sink.Line("[GitRT-TAG]");
+    sink.LineW(L"repo=" + repoRoot);
+    sink.Line("git=" + WideToUtf8(gitExe));
+
+    // ------------------------------------------------------------ 列表
+    if (o.workKind == CliOptions::CliWork::TagList) {
+        std::vector<TagInfo> tags;
+        std::wstring err;
+        const std::wstring remote = o.tagRemoteName.empty() ? L"origin" : o.tagRemoteName;
+        if (!LoadTags(gitExe, repoRoot, &tags, &err, remote)) {
+            sink.LineW(L"error=" + (err.empty() ? std::wstring(L"读取标签失败") : err));
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        sink.Line("count=" + std::to_string(tags.size()));
+        for (size_t i = 0; i < tags.size(); ++i) {
+            const std::wstring n = std::to_wstring(i);
+            sink.LineW(L"tag" + n + L"=" + tags[i].name);
+            sink.LineW(L"hash" + n + L"=" + tags[i].hash);
+            sink.LineW(L"short" + n + L"=" + tags[i].shortHash);
+            sink.Line(std::string("annotated") + std::to_string(i) + "=" + (tags[i].annotated ? "1" : "0"));
+            sink.Line(std::string("remote") + std::to_string(i) + "=" + (tags[i].onRemote ? "1" : "0"));
+            sink.LineW(L"subject" + n + L"=" + tags[i].subject);
+        }
+        // 给界面用的同一份文本（脚本也能直接看）
+        DumpTagLines(sink, "describe| ", DescribeTags(tags));
+        sink.Line("ok=1");
+        sink.Flush();
+        GRT_LOGI("cli", "--tag-list count=" << tags.size());
+        return 0;
+    }
+
+    // ------------------------------------------------------------ 新建
+    if (o.workKind == CliOptions::CliWork::TagCreate) {
+        sink.LineW(L"name=" + o.tagCreateName);
+        sink.Line(std::string("annotated=") + (o.tagAnnotated ? "1" : "0"));
+        sink.LineW(L"message=" + o.tagMessage);
+        const TagPlan plan = BuildTagPlan(gitExe, repoRoot, o.tagCreateName, o.tagMessage,
+                                          o.tagAnnotated, o.tagTarget, o.tagForce);
+        if (!plan.ok) {
+            sink.LineW(L"error=" + plan.error);
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        sink.LineW(L"target=" + plan.target);
+        for (const auto& w : plan.warnings) sink.LineW(L"warn=" + w);
+        for (const auto& c : plan.commandLines) sink.LineW(L"cmd=" + c);
+        if (o.dryRun) {
+            sink.Line("dry_run=1");
+            sink.Line("ok=1");
+            sink.Flush();
+            return 0;
+        }
+        const TagResult r = ApplyTagPlan(
+            gitExe, repoRoot, plan,
+            [&](const std::wstring& cmd) { sink.LineW(cmd); },
+            [&](const std::string& out) { sink.LineW(L"  " + Trim(W(out))); });
+        for (const auto& s : r.steps) {
+            sink.Line("step_exit=" + std::to_string(s.exitCode) + " cmd=" + WideToUtf8(s.commandLine));
+        }
+        if (!r.ok) {
+            sink.LineW(L"error=" + r.error);
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        sink.Line("created=1");
+        sink.Line("ok=1");
+        sink.Flush();
+        GRT_LOGI("cli", "--tag-create ok name=" << U8(plan.name));
+        return 0;
+    }
+
+    // ------------------------------------------------------------ 推送
+    if (o.workKind == CliOptions::CliWork::TagPush) {
+        sink.LineW(L"name=" + o.tagPushName);
+        const TagPlan plan = BuildPushTagPlan(gitExe, repoRoot, o.tagPushName, o.tagPushAll,
+                                              o.tagRemoteName);
+        if (!plan.ok) {
+            sink.LineW(L"error=" + plan.error);
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        for (const auto& w : plan.warnings) sink.LineW(L"warn=" + w);
+        for (const auto& c : plan.commandLines) sink.LineW(L"cmd=" + c);
+        if (o.dryRun) {
+            sink.Line("dry_run=1");
+            sink.Line("pushed=0");
+            sink.Line("ok=1");
+            sink.Flush();
+            return 0;
+        }
+        const TagResult r = ApplyTagPlan(
+            gitExe, repoRoot, plan,
+            [&](const std::wstring& cmd) { sink.LineW(cmd); },
+            [&](const std::string& out) { sink.LineW(L"  " + Trim(W(out))); });
+        for (const auto& s : r.steps) {
+            sink.Line("step_exit=" + std::to_string(s.exitCode) + " cmd=" + WideToUtf8(s.commandLine));
+        }
+        if (!r.ok) {
+            sink.LineW(L"error=" + r.error);
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        sink.Line("pushed=1");
+        sink.Line("ok=1");
+        sink.Flush();
+        GRT_LOGI("cli", "--tag-push ok name=" << U8(plan.name));
+        return 0;
+    }
+
+    // ------------------------------------------------------------ 删除（破坏性）
+    if (o.workKind == CliOptions::CliWork::TagDelete) {
+        sink.LineW(L"name=" + o.tagDeleteName);
+        const TagPlan plan = BuildDeleteTagPlan(gitExe, repoRoot, o.tagDeleteName,
+                                                o.tagDeleteRemote, o.tagRemoteName);
+        if (!plan.ok) {
+            sink.LineW(L"error=" + plan.error);
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        sink.Line(std::string("destructive=") + (plan.destructive ? "1" : "0"));
+        for (const auto& w : plan.warnings) sink.LineW(L"warn=" + w);
+        for (const auto& c : plan.commandLines) sink.LineW(L"cmd=" + c);
+        // 破坏性动作：脚本必须显式 --force（等价于界面上的二次确认）
+        if (!o.tagForce) {
+            sink.LineW(L"error=删除标签是破坏性操作：确认无误请加 --force");
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        if (o.dryRun) {
+            sink.Line("dry_run=1");
+            sink.Line("deleted_local=0");
+            sink.Line("deleted_remote=0");
+            sink.Line("ok=1");
+            sink.Flush();
+            return 0;
+        }
+        const TagResult r = ApplyTagPlan(
+            gitExe, repoRoot, plan,
+            [&](const std::wstring& cmd) { sink.LineW(cmd); },
+            [&](const std::string& out) { sink.LineW(L"  " + Trim(W(out))); });
+        for (const auto& s : r.steps) {
+            sink.Line("step_exit=" + std::to_string(s.exitCode) + " cmd=" + WideToUtf8(s.commandLine));
+        }
+        if (!r.ok) {
+            sink.LineW(L"error=" + r.error);
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        sink.Line("deleted_local=1");
+        sink.Line(std::string("deleted_remote=") + (plan.commandLines.size() > 1 ? "1" : "0"));
+        sink.Line("ok=1");
+        sink.Flush();
+        GRT_LOGI("cli", "--tag-delete ok name=" << U8(plan.name) << " remote=" << o.tagDeleteRemote);
+        return 0;
+    }
+
+    sink.Line("error=未知的标签动作");
+    sink.Line("ok=0");
+    sink.Flush();
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// 发布（--release-list / --release-create）—— GitHub Release，走 gh（不是 git）
+// ---------------------------------------------------------------------------
+int RunCliRelease(const CliOptions& o) {
+    LogInit();
+    const bool console = AttachParentConsole();
+    Sink sink;
+    sink.path = o.outPath;
+    sink.console = console;
+
+    const std::wstring gitExe = FindGitExecutable();
+    std::wstring repoRoot = o.cwd;
+    if (!repoRoot.empty()) {
+        const RepoProbeResult pr = ProbeRepo(repoRoot);
+        if (pr.IsRepo()) repoRoot = pr.repoRoot;
+    }
+
+    sink.Line("[GitRT-RELEASE]");
+    sink.LineW(L"repo=" + repoRoot);
+    sink.Line("git=" + WideToUtf8(gitExe));
+
+    const GhInfo gh = DetectGh();
+    sink.Line(std::string("gh=") + (gh.available ? "1" : "0"));
+    if (gh.available) {
+        sink.LineW(L"gh_version=" + gh.version);
+        sink.LineW(L"gh_exe=" + gh.exe);
+    } else {
+        sink.LineW(L"gh_hint=" + gh.error);
+    }
+
+    // ------------------------------------------------------------ 列表
+    if (o.workKind == CliOptions::CliWork::ReleaseList || o.workKind == CliOptions::CliWork::None) {
+        std::vector<ReleaseEntry> list;
+        std::wstring err;
+        const bool done = LoadReleases(gitExe, repoRoot, &list, &err);
+        if (!done) {
+            // gh 没装 / 没登录 / 不是 GitHub 仓库：如实报告，但**不崩**
+            sink.Line("count=0");
+            sink.LineW(L"error=" + (err.empty() ? std::wstring(L"读取发布列表失败") : err));
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        sink.Line("count=" + std::to_string(list.size()));
+        for (size_t i = 0; i < list.size(); ++i) {
+            const std::wstring n = std::to_wstring(i);
+            sink.LineW(L"release" + n + L"=" + list[i].tag);
+            sink.LineW(L"title" + n + L"=" + list[i].name);
+            sink.LineW(L"published" + n + L"=" + list[i].publishedAt);
+            sink.Line(std::string("draft") + std::to_string(i) + "=" + (list[i].draft ? "1" : "0"));
+            sink.Line(std::string("prerelease") + std::to_string(i) + "=" +
+                      (list[i].prerelease ? "1" : "0"));
+        }
+        sink.Line("ok=1");
+        sink.Flush();
+        GRT_LOGI("cli", "--release-list count=" << list.size());
+        return 0;
+    }
+
+    // ------------------------------------------------------------ 创建
+    if (o.workKind == CliOptions::CliWork::ReleaseCreate) {
+        sink.LineW(L"tag=" + o.releaseTag);
+        const ReleasePlan plan =
+            BuildReleasePlan(gitExe, repoRoot, o.releaseTag, o.releaseTitle, o.releaseNotes,
+                             o.releaseDraft, o.releasePrerelease, o.releasePushTag, o.releaseAssets,
+                             o.releaseGenerateNotes);
+        if (!plan.ok) {
+            sink.LineW(L"error=" + plan.error);
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        sink.LineW(L"title=" + (plan.title.empty() ? plan.tag : plan.title));
+        sink.Line(std::string("draft=") + (plan.draft ? "1" : "0"));
+        sink.Line(std::string("prerelease=") + (plan.prerelease ? "1" : "0"));
+        sink.Line(std::string("push_tag=") + (plan.pushTag ? "1" : "0"));
+        sink.Line(std::string("generate_notes=") + (plan.generateNotes ? "1" : "0"));
+        for (const auto& a : plan.assets) sink.LineW(L"asset=" + a);
+        for (const auto& w : plan.warnings) sink.LineW(L"warn=" + w);
+        for (const auto& c : plan.commandLines) sink.LineW(L"cmd=" + c);
+        if (o.dryRun) {
+            sink.Line("dry_run=1");
+            sink.Line("ok=1");
+            sink.Flush();
+            return 0;
+        }
+        const ReleaseResult r = ApplyReleasePlan(
+            repoRoot, plan,
+            [&](const std::wstring& cmd) { sink.LineW(cmd); },
+            [&](const std::string& out) { sink.LineW(L"  " + Trim(W(out))); });
+        for (const auto& s : r.steps) {
+            sink.Line("step_exit=" + std::to_string(s.exitCode) + " cmd=" + WideToUtf8(s.commandLine));
+        }
+        if (!r.ok) {
+            sink.LineW(L"error=" + r.error);
+            sink.Line("ok=0");
+            sink.Flush();
+            return 1;
+        }
+        sink.Line("created=1");
+        sink.Line("ok=1");
+        sink.Flush();
+        GRT_LOGI("cli", "--release-create ok tag=" << U8(plan.tag));
+        return 0;
+    }
+
+    sink.Line("error=未知的发布动作");
+    sink.Line("ok=0");
+    sink.Flush();
+    return 1;
+}
+
 int RunCliAi(const CliOptions& o) {
     LogInit();
     const bool console = AttachParentConsole();

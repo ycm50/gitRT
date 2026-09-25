@@ -43,6 +43,7 @@
 | **AI 助手** | 自然语言 → 结构化计划 → **白名单校验** → 参数面板 → 执行；只发路径/分支名/文件名，不发文件内容；`Internal` 命令禁止 AI 执行 |
 | **AI 设置（首选项）** | 接口地址 / 模型（**从接口拉取列表后下拉选择**，也可手输）/ API Key / 超时 + **测试连接**；Key 明文存 exe 同目录 `GitRT.ai.json`（也可只用环境变量） |
 | **CLI 门面（远端/还原）** | `--remote-info [--remote-fetch]` / `--set-upstream <up>` / `--remote-add name=url` / `--remote-set-url name=url` / `--remote-remove <name>` / `--restore <hash> --mode detach|branch|soft|mixed|hard [--branch <n>] [--force] [--dry-run]` |
+| **CLI 门面（标签/发布）** | `--tag-list` / `--tag-create <name> [--annotated] [--message <m>] [--target <rev>] [--force] [--dry-run]` / `--tag-push <name> [--all] [--remote <r>]` / `--tag-delete <name> [--remote] [--force] [--dry-run]` / `--release-list` / `--release-create <tag> [--title <t>] [--notes <n>] [--generate-notes] [--draft] [--prerelease] [--push-tag] [--asset <file>]… [--dry-run]` |
 | **CLI 门面** | `--run`（默认真执行，`--dry-run` 只预览）/ `--list-commands` / `--out` / `--cwd` / `--ai` / **`--squash <hashes>`**（合并连续提交，可脚本化）（脚本化、CI 可复现） |
 | **右键菜单形态可切换** | 默认 `menu.mode=app`（只一个入口）；`"menu.mode": "tree"` 可回到分层菜单（8 分组 + 可选直达项/内联开关） |
 | **图标一致** | 任务栏与右键菜单用**同一张** `packaging/Assets/gitrt.ico`（构建期同一份文件打进两个二进制） |
