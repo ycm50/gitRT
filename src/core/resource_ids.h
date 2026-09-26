@@ -391,6 +391,7 @@
 #define IDS_AI_SET_LABEL_TIMEOUT  5523
 #define IDS_AI_SET_LABEL_STORE    5524
 #define IDS_AI_SET_HINT_KEY       5525
+#define IDS_AI_SET_PROTECT_KEY    5526   // 「用 Windows 加密（DPAPI）保存 Key」复选框
 #define IDS_MSG_AI_SAVED       4107
 #define IDS_MSG_AI_SAVE_FAILED 4108
 #define IDS_MSG_AI_TESTING     4109

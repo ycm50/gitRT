@@ -1,5 +1,6 @@
 #include "gui.h"
 
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <uxtheme.h>
@@ -124,6 +125,24 @@ HICON GitRTAppIcon() {
     return cached;
 }
 
+namespace {
+// ThemeApply 用：把同一个主题套到**子控件**上。
+// 为什么要做：`SetWindowTheme(父窗口, …)` 不会传给子控件，而深色下推钮若仍走浅色主题，
+// 就会出现"深色窗口上贴一排浅色按钮"（用户反馈的"没边框/不协调"）。
+// 只处理 Button；ListView 另有 ThemeApplyToTableView（它还要改背景/文字色）。
+BOOL CALLBACK ApplyThemeToChild(HWND child, LPARAM param) {
+    const bool dark = param != 0;
+    if (!dark) return TRUE;   // 浅色模式：按钮保持系统默认外观（别去动它，免得改掉现有观感）
+    wchar_t cls[64]{};
+    ::GetClassNameW(child, cls, 63);
+    if (::lstrcmpiW(cls, L"Button") == 0) {
+        ::SetWindowTheme(child, L"DarkMode_Explorer", nullptr);
+        ::InvalidateRect(child, nullptr, TRUE);
+    }
+    return TRUE;
+}
+}  // namespace
+
 void ThemeApply(HWND hwnd) {
     Theme& t = Th();
     BOOL dark = t.dark ? TRUE : FALSE;
@@ -136,15 +155,57 @@ void ThemeApply(HWND hwnd) {
     } else {
         ::SetWindowTheme(hwnd, L"Explorer", nullptr);
     }
+    // 推钮在深色模式下也要变深（见上面 ApplyThemeToChild 的说明）
+    ::EnumChildWindows(hwnd, ApplyThemeToChild, t.dark ? 1 : 0);
     ::InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+// 窗口自身的背景擦除（深色模式下用主题刷填满客户区）。
+// 为什么要单独抽出来：`ThemeApply()` 只给窗口设主题，**窗口背景仍由窗口类的画刷决定**；
+// 而好几个窗口注册时用的是 `COLOR_WINDOW + 1`（系统**浅色**），于是深色模式下会出现
+// "深色控件条（WM_CTLCOLOR* 生效了）+ 浅色窗口背景"的割裂 —— 实测反馈就是"色彩不协调"。
+bool HandleEraseBkgnd(HWND hwnd, HDC dc) {
+    Theme& t = Th();
+    if (!t.dark || !t.bgBrush) return false;
+    RECT rc{};
+    ::GetClientRect(hwnd, &rc);
+    ::FillRect(dc, &rc, t.bgBrush);
+    return true;
+}
+
+// 表格类控件（ListView）跟随主题。**必须逐个控件设**：
+//   · ThemeApply() 的 SetWindowTheme 只作用于窗口自己，不会传给子控件；
+//   · ListView 的背景/文字色要显式发 LVM_SET*COLOR，表头还是另一个控件、要再套一次主题。
+// 以前整个代码库都没做这件事（`ListView_SetBkColor` 一次都没出现），于是深色模式下
+// 到处都是"深色窗口里嵌一块亮白表格"。
+void ThemeApplyToTableView(HWND listView) {
+    if (!listView) return;
+    Theme& t = Th();
+    if (t.dark) {
+        ::SetWindowTheme(listView, L"DarkMode_Explorer", nullptr);
+        ::SendMessageW(listView, LVM_SETBKCOLOR, 0, static_cast<LPARAM>(t.editBg));
+        ::SendMessageW(listView, LVM_SETTEXTBKCOLOR, 0, static_cast<LPARAM>(t.editBg));
+        ::SendMessageW(listView, LVM_SETTEXTCOLOR, 0, static_cast<LPARAM>(t.text));
+        if (HWND hdr = reinterpret_cast<HWND>(::SendMessageW(listView, LVM_GETHEADER, 0, 0))) {
+            ::SetWindowTheme(hdr, L"DarkMode_Explorer", nullptr);
+        }
+    } else {
+        ::SetWindowTheme(listView, L"Explorer", nullptr);
+    }
+    ::InvalidateRect(listView, nullptr, TRUE);
 }
 
 bool HandleCtlColor(UINT msg, HDC dc, HWND child, LRESULT* result) {
     Theme& t = Th();
     if (!t.dark) return false;
     switch (msg) {
+        // ★ 只处理**静态文本**：不处理 WM_CTLCOLORBTN。
+        //   原因（用户反馈"按钮看上去不对、几乎看不见文字，点一下才正常"）：
+        //   主题化的**推钮会忽略这里返回的画刷**（WM_CTLCOLORBTN 对 BS_PUSHBUTTON 不生效），
+        //   但我们在 DC 上设的 `SetTextColor(深色模式的浅色)` 可能被它沿用 →
+        //   浅色按钮面 + 浅色文字 = 几乎看不见；一按下去按钮改用自己主题重绘就"正常"了。
+        //   复选框/单选钮的标题走的是 WM_CTLCOLORSTATIC，不受影响（系统文档如此）。
         case WM_CTLCOLORSTATIC:
-        case WM_CTLCOLORBTN:
             ::SetTextColor(dc, t.text);
             ::SetBkColor(dc, t.bg);
             if (result) *result = reinterpret_cast<LRESULT>(t.bgBrush);

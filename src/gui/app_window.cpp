@@ -254,8 +254,12 @@ LRESULT CALLBACK AppProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     const std::wstring git = App().gitExe, root = App().repoRoot;
                     std::thread([hwnd, git, root]() {
                         const std::wstring err = FetchRemote(git, root);
-                        ::PostMessageW(hwnd, WM_GRT_AUTOFETCH_DONE, 0,
-                                       reinterpret_cast<LPARAM>(new std::wstring(err)));
+                        // ★ PostMessageW 可能失败（窗口已销毁）——这时 new 出来的对象必须自己回收。
+                        //   漏掉这一句就是泄漏（GCC -fanalyzer 的 -Wanalyzer-malloc-leak 会指出来）。
+                        auto* payload = new std::wstring(err);
+                        if (!::PostMessageW(hwnd, WM_GRT_AUTOFETCH_DONE, 0,
+                                            reinterpret_cast<LPARAM>(payload)))
+                            delete payload;
                     }).detach();
                 }
             }

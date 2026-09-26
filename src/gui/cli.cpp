@@ -177,6 +177,16 @@ int RunCliCommand(const CliOptions& o) {
 
     if (spec->exec == ExecKind::Internal) {
         sink.Line("note=internal command (needs the GUI); nothing executed");
+        // 指路：这两个"列表"命令在 CLI 里另有专用开关（不只是在 GUI 里能用），
+        // 免得看到 exit=1 + "needs the GUI" 就以为功能没实现。
+        // 退出码仍是 1：**确实什么都没执行**，脚本据此判定"没跑"是对的（test-all 也断言了这一点）。
+        if (spec->id == 2307) {   // tag.list
+            sink.LineW(L"hint=CLI \u4fa7\u53ef\u76f4\u63a5\u7528 --tag-list \u5217\u51fa\u6807\u7b7e\uff1b"
+                       L"GUI \u4fa7\u70b9\u300c\u6267\u884c\u300d\u6253\u5f00\u6807\u7b7e\u5217\u8868\u7a97\u53e3");
+        } else if (spec->id == 2311) {   // release.list
+            sink.LineW(L"hint=CLI \u4fa7\u53ef\u76f4\u63a5\u7528 --release-list \u5217\u51fa\u53d1\u5e03\uff1b"
+                       L"GUI \u4fa7\u70b9\u300c\u6267\u884c\u300d\u6253\u5f00\u53d1\u5e03\u5217\u8868\u7a97\u53e3");
+        }
         sink.Line("exit=1");
         sink.Flush();
         return 1;

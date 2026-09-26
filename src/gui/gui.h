@@ -52,6 +52,16 @@ bool   IsSystemDark();
 // 在每个窗口的 WM_CTLCOLOR* 中调用；返回 true 表示已处理
 bool HandleCtlColor(UINT msg, HDC dc, HWND child, LRESULT* result);
 
+// 窗口自身的背景擦除（深色模式下用主题刷填满客户区）。
+// 在各窗口的 `case WM_ERASEBKGND:` 里调用；返回 true 就直接 `return 1`。
+// 为什么需要：窗口背景由**窗口类的画刷**决定，而好几个窗口注册时用的是 `COLOR_WINDOW + 1`
+// （系统浅色）→ 深色模式下会出现"深色控件 + 浅色背景"的割裂（用户反馈"色彩不协调"）。
+bool HandleEraseBkgnd(HWND hwnd, HDC dc);
+
+// 表格类控件（ListView）跟随主题：深色模式下套 DarkMode_Explorer + 改背景/文字色 + 表头单独套主题。
+// 注意 `ThemeApply()` 的 SetWindowTheme **不会**传给子控件，所以每个 ListView 都要单独调一次。
+void ThemeApplyToTableView(HWND listView);
+
 int  Scale(int px);
 int  ScaleFont(int pt);
 
@@ -111,6 +121,44 @@ void ShowRemoteWindow(HWND owner);   // 远端分支与地址：抓取 / 检出 
 void ShowTagWindow(HWND owner);
 // 发布窗口（阶段二）：gh 能力探测 + Release 列表 + 创建发布（标题/说明/草稿/预发布/附件）
 void ShowReleaseWindow(HWND owner);
+
+// ------------------------------------------------------- 内部命令的"去向"（唯一一份）
+// 为什么要有这个枚举：内部命令（ExecKind::Internal）以及几个走专用窗口的命令，都由
+// ExecuteInternalCommand() 分派；以前分派是个 switch，**没人能回答"每个内部命令都有去处吗"**。
+// 于是「标签列表 / 发布列表」在菜单里看得见、点下去却弹「该功能尚未实现」——
+// 这类"菜单里有、点下去未实现"的 bug 靠人眼是看不出来的。
+// 现在把映射抽成纯函数：分派用它，GUI 自检也用它遍历命令表断言"没有命令落到 Unimplemented"。
+enum class InternalAction {
+    Console,         // app.console：把主窗口带到前台
+    Terminal,        // app.terminal
+    Gitignore,       // commit.ignore
+    SquashWindow,    // commit.squash
+    TextWindow,      // inspect.log / inspect.diff / inspect.filelog
+    StatusView,      // inspect.status
+    Settings,        // app.settings
+    Doctor,          // app.doctor
+    Ai,              // app.ai
+    RestoreWindow,   // history.restore
+    RemoteWindow,    // remote.panel
+    TagWindow,       // tag.list / tag.create / tag.push / tag.delete
+    ReleaseWindow,   // release.list / release.create
+    Unimplemented,   // 还没有实现（点了会弹「该功能尚未实现」）
+};
+InternalAction ActionOfInternal(CommandId id);
+// 该命令是否打开"专用窗口"：参数面板据此把它当**启动器**（预览显示提示、执行直接开窗，
+// 而不是拼 argv 执行）。注意这几个命令的 ExecKind 不统一（有的是 Internal，有的是 CliPanel），
+// 所以判断必须集中在这里，别在别处再抄一份。
+bool OpensDedicatedWindow(CommandId id);
+// 自检用：某个专用窗口当前列表控件的行数（窗口没开或还没有列表 → -1）。
+// 用途：断言「点开标签列表看到的行数 == LoadTags 读到的条数」，防止窗口开了却是空壳。
+int TagWindowRowCount();
+int ReleaseWindowRowCount();
+// 自动化运行（GUI 自检 / CI）期间**抑制模态弹框**。
+// 为什么需要：模态框会**阻塞调用线程**，自动化里没人去点它 → 回归的表现不是"失败"而是"永远不返回"
+// （实测：分派缺一个映射时，自检的报告文件根本没生成，任务挂了一百多秒直到被外部杀掉）。
+// 自检在开头打开它；用户正常使用时不受影响（没人调用它）。
+void SuppressModalDialogs(bool suppress);
+bool ModalDialogsSuppressed();
 // AI 配置变化通知（ShowSettingsWindow 的 notify 会收到）
 constexpr UINT WM_GRT_AI_CONFIG_RELOAD = WM_APP + 65;
     // 合并提交完成（lParam = new SquashResult，接收方负责 delete）

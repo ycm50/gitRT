@@ -415,17 +415,17 @@ void RunPlan(HWND hwnd, RelState* st, const ReleasePlan& plan) {
             repoRoot, plan,
             [hwnd](const std::wstring& cmd) {
                 auto* s = new std::string(U8(cmd) + "\r\n");
-                ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
             },
             [hwnd](const std::string& out) {
                 if (out.empty()) return;
                 auto* s = new std::string(out);
-                ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
             });
         const std::wstring reason = r.error.empty() ? std::wstring(L"未知原因") : r.error;
         const std::wstring line = r.ok ? std::wstring(L"完成：发布已创建") : ReplaceAll(failTpl, L"{msg}", reason);
         auto* s = new std::string(U8(line) + "\r\n");
-        ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+        if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
         ::PostMessageW(hwnd, WM_GRT_REL_DONE, static_cast<WPARAM>(r.ok ? 0 : kRelFail), 0);
     }).detach();
 }
@@ -474,6 +474,7 @@ LRESULT CALLBACK RelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ::SendMessageW(st->list, WM_SETFONT, reinterpret_cast<WPARAM>(Th().fontUi), TRUE);
             ListView_SetExtendedListViewStyle(st->list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES |
                                                              LVS_EX_DOUBLEBUFFER);
+            ThemeApplyToTableView(st->list);   // 深色模式下让列表与表头跟着变深（否则是亮白表格）
             struct Col { UINT res; int width; };
             const Col cols[] = {{IDS_REL_COL_TAG, Scale(160)},
                                 {IDS_REL_COL_NAME, Scale(430)},
@@ -587,6 +588,11 @@ LRESULT CALLBACK RelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLORBTN:
+        case WM_ERASEBKGND:
+            // 窗口背景用主题刷填（本窗口类注册时用的是 COLOR_WINDOW 浅色画刷，
+            // 而深色模式下控件已被 WM_CTLCOLOR* 变深 → 不擦会"深浅割裂"）
+            if (HandleEraseBkgnd(hwnd, reinterpret_cast<HDC>(wp))) return 1;
+            break;
         case WM_CTLCOLOREDIT:
         case WM_CTLCOLORLISTBOX: {
             LRESULT res = 0;
@@ -754,11 +760,21 @@ void ShowReleaseWindow(HWND owner) {
     if (App().releases && ::IsWindow(App().releases)) {
         ::ShowWindow(App().releases, SW_SHOW);
         ::SetForegroundWindow(App().releases);
+        // ★ 复用已有窗口时刷新列表（同 ShowTagWindow 的理由：这个窗口也是「发布列表」的落点，
+        //   期间可能在别处（CLI / gh）新建或删除了发布，旧列表会过期）。
+        if (RelState* st = StateOf(App().releases)) {
+            ApplyGhCapability(st);
+            FillList(st);
+            RefreshPreview(st);
+        }
         return;
     }
     if (App().repoRoot.empty()) {
-        ::MessageBoxW(owner, Str(IDS_MSG_NEED_REPO).c_str(), Str(IDS_TITLE_RELEASE).c_str(),
-                      MB_OK | MB_ICONINFORMATION);
+        // 自动化期间不弹模态框（会阻塞线程 → 自检挂死）；正常使用时会弹。
+        if (!ModalDialogsSuppressed()) {
+            ::MessageBoxW(owner, Str(IDS_MSG_NEED_REPO).c_str(), Str(IDS_TITLE_RELEASE).c_str(),
+                          MB_OK | MB_ICONINFORMATION);
+        }
         return;
     }
     HWND h = ::CreateWindowExW(WS_EX_CONTROLPARENT, kReleaseClass, Str(IDS_TITLE_RELEASE).c_str(),
@@ -771,6 +787,14 @@ void ShowReleaseWindow(HWND owner) {
         ::ShowWindow(h, SW_SHOW);
         ::UpdateWindow(h);
     }
+}
+
+// 自检用：发布窗口当前列表的行数（窗口没开 / 还没有列表 → -1）。见 TagWindowRowCount 的说明。
+int ReleaseWindowRowCount() {
+    if (!App().releases || !::IsWindow(App().releases)) return -1;
+    HWND list = ::GetDlgItem(App().releases, IDC_REL_LIST);
+    if (!list) return -1;
+    return static_cast<int>(::SendMessageW(list, LVM_GETITEMCOUNT, 0, 0));
 }
 
 }  // namespace grt::gui

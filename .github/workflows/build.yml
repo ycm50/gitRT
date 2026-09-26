@@ -2,12 +2,19 @@
 # GitRT 构建 / 测试 / 打包（GitHub Actions）
 #
 #   与本地完全同一套流程（README「快速开始」「测试」）：
-#     · MSYS2 UCRT64 工具链（g++ / windres / ninja / objdump）
+#     · MSYS2 UCRT64 工具链（g++ / windres / ninja / objdump）—— 只在 build job 装
 #     · Debug + Release 两个配置都构建
-#     · CTest（二进制自带的 2 个测试）+ GUI 自检 + Shell 探针自检/菜单 dump
-#     · 功能套件（远端与还原 / 合并提交 / 克隆选项）—— 纯 CLI + 真 git，CI 可跑
-#     · 打包 Release 目录与 zip（packaging/scripts/build-release.ps1，内含 install/uninstall）
+#     · CTest（3 个用例：core_selftest / gui_selftest / shell_selftest）+ Shell 探针菜单 dump
+#     · 功能套件（远端与还原 / 合并提交 / 克隆选项 / 标签与发布）—— 纯 CLI + 真 git；
+#       只在 Release 那一路跑（与构建类型无关，跑两遍只是重复最慢的一段）
+#     · package job **复用 build job 的 Release 产物**（不再重装工具链、不再重建），
+#       只做"组装发布目录 + install/uninstall 端到端"（packaging/scripts/build-release.ps1）
+#     · 静态分析 job：g++ -fanalyzer + -Werror（零第三方依赖，见该 job 里的两类已知假阳性说明）
 #     · 打 tag 时自动建 GitHub Release 并附上 zip
+#
+#   ★ 文档体检（tools/check-docs.py）**只在本机跑，不进 CI**：它要打印中文，
+#     而 runner 的 stdout 是西文代码页 → UnicodeEncodeError 让步骤 10 秒失败
+#     （本机是 GBK 所以照过；`python -X utf8 tools/check-docs.py` 可修，见 改进规划 §16）。
 #
 #   ★ CI 踩过的坑（见 docs/技术实现设计.md 偏差 30）：
 #     1) **不要**把原生命令接进 `Select-Object -First N`：管道被提前关闭会让
@@ -16,8 +23,8 @@
 #     2) **别猜 MSYS2 装在哪**：setup-msys2 有官方 output `msys2-location`，用它；
 #        它默认**不**把工具加进 PATH，所以后面统一用 $env:UCRT64_BIN 的绝对路径。
 #     3) 纯诊断步骤一律 `continue-on-error: true`。
-#
-#   两个 job 的「定位 UCRT64 工具链」步骤内容必须保持一致（改一处要同步另一处）。
+#     4) **别在多个 job 里复制同一段脚本**：安装清单与「定位 UCRT64 工具链」现在都只在
+#        .github/actions/setup-ucrt64 里（复合动作，build 与 analysis 共用）。
 #
 #   注意：需要"注册身份包"的端到端用例（tools/test-all.ps1 的 D 阶段、现代菜单聚合）
 #   依赖本机的开发者模式 + 交互式桌面会话，CI 里不跑；它们在本地按 README 的
@@ -56,60 +63,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: 安装 MSYS2 UCRT64 工具链
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: false
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-binutils
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-
-      # ★ 别猜盘符：setup-msys2 自己会报安装位置（outputs.msys2-location），先信它；
-      #   再按环境变量/PATH/常见目录兜底（它默认**不**把工具加进 PATH）
-      - name: 定位 UCRT64 工具链
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $cands = New-Object System.Collections.Generic.List[string]
-          $cands.Add('${{ steps.msys2.outputs.msys2-location }}/ucrt64/bin')
-          foreach ($root in @($env:MSYS2_ROOT, $env:MSYS2_ROOT_HINT, "$env:RUNNER_TEMP/msys64", 'C:/msys64', 'D:/msys64')) {
-            if ([string]::IsNullOrWhiteSpace($root)) { continue }
-            $cands.Add("$root/ucrt64/bin")
-          }
-          foreach ($tool in @('g++.exe', 'ninja.exe')) {
-            $c = Get-Command $tool -ErrorAction SilentlyContinue
-            if ($c -and $c.Source) { $cands.Add((Split-Path -Parent $c.Source)) }
-          }
-          foreach ($root in @($env:RUNNER_TEMP, 'C:/', 'D:/')) {
-            if ([string]::IsNullOrWhiteSpace($root)) { continue }
-            if (-not (Test-Path $root)) { continue }
-            Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -like '*msys*' } |
-              ForEach-Object { $cands.Add((Join-Path $_.FullName 'ucrt64/bin')) }
-          }
-
-          $bin = $null
-          foreach ($c in $cands) {
-            if ([string]::IsNullOrWhiteSpace($c)) { continue }
-            $c = $c.Replace('\', '/')
-            if ((Test-Path (Join-Path $c 'g++.exe')) -and (Test-Path (Join-Path $c 'ninja.exe'))) {
-              $bin = $c
-              break
-            }
-          }
-          if (-not $bin) {
-            throw "找不到 UCRT64 工具链（需要 g++.exe 与 ninja.exe）。试过：$($cands -join ' | ')"
-          }
-          Add-Content -Path $env:GITHUB_ENV  -Value "UCRT64_BIN=$bin"
-          Add-Content -Path $env:GITHUB_PATH -Value $bin      # objdump 也要在 PATH 上（见下方导出表校验）
-          "UCRT64_BIN=$bin"
-          $gxx = & (Join-Path $bin 'g++.exe') --version
-          "g++: $($gxx[0])"
-          $LASTEXITCODE = 0
+      # 装工具链 + 定位 ucrt64/bin 都在这一个复合动作里（安装清单与候选路径逻辑各只有一份）
+      - uses: ./.github/actions/setup-ucrt64
 
       # 纯诊断：打印版本，出错也不该让构建挂（continue-on-error）
       - name: 显示工具链版本
@@ -214,9 +169,12 @@ jobs:
           if ($code -ne 0) { throw "菜单 dump 失败（exit=$code）" }
           $LASTEXITCODE = 0
 
-      # 功能套件：这三套是纯 CLI + 真 git 仓库的端到端（不弹窗口、不需要桌面会话），
-      # 所以 CI 里可以放心跑；GUI 相关的 demo 脚本仍然只在本地按 README 跑。
+      # 功能套件：纯 CLI + 真 git 仓库的端到端（不弹窗口、不需要桌面会话），CI 里可以放心跑。
+      # ★ 只在 Release 那一路跑：这四套是"命令行行为"的端到端，与构建类型无关，
+      #   在 Debug/Release 各跑一遍等于把最慢的一段重复一次（CTest 与自检两个配置都跑，够覆盖 Debug 差异）。
+      #   GUI 相关的 demo 脚本仍然只在本地按 README 跑。
       - name: 功能套件（远端与还原 / 合并提交 / 克隆选项）
+        if: matrix.config == 'Release'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -253,6 +211,62 @@ jobs:
             build/selftest-gui-${{ matrix.config == 'Debug' && 'debug' || 'release' }}.txt
             build/selftest-shell-${{ matrix.config == 'Debug' && 'debug' || 'release' }}.txt
 
+  # ------------------------------------------------------------------ 静态分析
+  # g++ -fanalyzer：**零第三方依赖**（不用装 cppcheck/clang-tidy），找的是真实的
+  # 资源泄漏 / 空指针 / 越界 / 重复释放。单独一个 job：它让每个文件多花 2–7 秒，不该拖慢日常构建。
+  analysis:
+    name: 静态分析（g++ -fanalyzer）
+    runs-on: windows-2022
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-ucrt64
+
+      - name: 配置 + 构建（-fanalyzer + -Werror：分析出的告警即失败）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:UCRT64_BIN -or -not (Test-Path (Join-Path $env:UCRT64_BIN 'ninja.exe'))) {
+            throw "UCRT64_BIN 没设好（当前='$env:UCRT64_BIN'）"
+          }
+          # 关掉 GCC 16 分析器在这个代码库上的两类已知假阳性（都不是真 bug，追踪原文可查）：
+          #   ① -Wanalyzer-malloc-leak：它假设 Win32 API 会抛 C++ 异常，于是把
+          #      "把 new 的对象交给窗口消息（PostMessageW，接收端 delete）"一律报成泄漏 ——
+          #      追踪里写的是 "if 'WINBOOL PostMessageW(...)' throws an exception"，不可能发生。
+          #   ② -Wanalyzer-use-of-uninitialized-value：它假设 std::string 操作会抛（
+          #      "if 'std::__throw_length_error(...)' throws an exception" + 异常展开），
+          #      在展开路径上跟丢临时对象，于是把 `ReplaceAll(...)` 的返回值报成未初始化。
+          #
+          # ★ 但别把 ① 当成没用的噪声：它当初正是靠"PostMessageW 失败路径上对象没被回收"这一点，
+          #   找出并修掉了 src/gui 里 25 处**真泄漏**（窗口被关掉时 PostMessageW 返回 FALSE）。
+          #   所以建议偶尔去掉这个开关跑一次全量分析，人工过一眼：噪声里夹着真货。
+          # 想看到这两类原始提示：去掉下面这个 -DCMAKE_CXX_FLAGS 重新配置即可。
+          cmake -S . -B build/analyze -G Ninja `
+            -DCMAKE_BUILD_TYPE=Debug `
+            -DCMAKE_MAKE_PROGRAM="$env:UCRT64_BIN/ninja.exe" `
+            -DCMAKE_C_COMPILER="$env:UCRT64_BIN/gcc.exe" `
+            -DCMAKE_CXX_COMPILER="$env:UCRT64_BIN/g++.exe" `
+            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe" `
+            -DGRT_ANALYZER=ON -DGRT_WERROR=ON `
+            "-DCMAKE_CXX_FLAGS=-Wno-analyzer-malloc-leak -Wno-analyzer-use-of-uninitialized-value"
+          if ($LASTEXITCODE -ne 0) { throw "配置失败（exit=$LASTEXITCODE）" }
+          $out = cmake --build build/analyze --parallel 2>&1
+          $code = $LASTEXITCODE
+          $out | Set-Content -Path build/analyze.log -Encoding utf8
+          $out | Select-String -Pattern 'warning:|error:' | Select-Object -First 30
+          if ($code -ne 0) { throw "静态分析发现告警（-Werror）；完整日志见 artifact static-analysis-log" }
+          "静态分析：0 告警"
+
+      - name: 上传分析日志
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: static-analysis-log
+          path: build/analyze.log
+          if-no-files-found: ignore
+
   package:
     name: package (release zip)
     needs: build
@@ -262,78 +276,29 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: 安装 MSYS2 UCRT64 工具链
-        id: msys2
-        uses: msys2/setup-msys2@v2
+      # ★ 这里**不再**重装 MSYS2、也不再重建 Release。
+      #   build job 的 Release 那一路已经构建过，并把二进制 + 生成的 AppxManifest.xml 上传成
+      #   gitrt-binaries-Release；package 只需要"组装 + 安装/卸载端到端"。
+      #   已核实的依据：build-msix.ps1 -LayoutOnly 只要生成好的清单 + 源码 Assets
+      #   （不需要编译器、不需要 Windows SDK）；build-release.ps1 用递归查找定位二进制。
+      #   导出表 / 无运行时 DLL 依赖的校验仍留在 build job（那里才有 objdump）。
+      - name: 下载 build job 的 Release 产物
+        uses: actions/download-artifact@v5
         with:
-          msystem: UCRT64
-          update: false
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-binutils
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
+          name: gitrt-binaries-Release
+          path: build
 
-      # ★ 与 build job 的这一步**内容必须一致**（别猜安装位置：先信 action 的 output）
-      - name: 定位 UCRT64 工具链
+      # download-artifact 的落地层级取决于 upload-artifact 算出的公共父目录（可能平铺、也可能带
+      # 中间层），这里统一"归位"成打包脚本期望的 build/release/... 布局（幂等，已就位的不动）。
+      - name: 产物归位（供打包脚本按本地构建布局取用）
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $cands = New-Object System.Collections.Generic.List[string]
-          $cands.Add('${{ steps.msys2.outputs.msys2-location }}/ucrt64/bin')
-          foreach ($root in @($env:MSYS2_ROOT, $env:MSYS2_ROOT_HINT, "$env:RUNNER_TEMP/msys64", 'C:/msys64', 'D:/msys64')) {
-            if ([string]::IsNullOrWhiteSpace($root)) { continue }
-            $cands.Add("$root/ucrt64/bin")
-          }
-          foreach ($tool in @('g++.exe', 'ninja.exe')) {
-            $c = Get-Command $tool -ErrorAction SilentlyContinue
-            if ($c -and $c.Source) { $cands.Add((Split-Path -Parent $c.Source)) }
-          }
-          foreach ($root in @($env:RUNNER_TEMP, 'C:/', 'D:/')) {
-            if ([string]::IsNullOrWhiteSpace($root)) { continue }
-            if (-not (Test-Path $root)) { continue }
-            Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -like '*msys*' } |
-              ForEach-Object { $cands.Add((Join-Path $_.FullName 'ucrt64/bin')) }
-          }
-
-          $bin = $null
-          foreach ($c in $cands) {
-            if ([string]::IsNullOrWhiteSpace($c)) { continue }
-            $c = $c.Replace('\', '/')
-            if ((Test-Path (Join-Path $c 'g++.exe')) -and (Test-Path (Join-Path $c 'ninja.exe'))) {
-              $bin = $c
-              break
-            }
-          }
-          if (-not $bin) {
-            throw "找不到 UCRT64 工具链（需要 g++.exe 与 ninja.exe）。试过：$($cands -join ' | ')"
-          }
-          Add-Content -Path $env:GITHUB_ENV  -Value "UCRT64_BIN=$bin"
-          Add-Content -Path $env:GITHUB_PATH -Value $bin
-          "UCRT64_BIN=$bin"
-          $LASTEXITCODE = 0
-
-      - name: 配置 + 构建 Release
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not $env:UCRT64_BIN -or -not (Test-Path (Join-Path $env:UCRT64_BIN 'ninja.exe'))) {
-            throw "UCRT64_BIN 没设好（当前='$env:UCRT64_BIN'）：「定位 UCRT64 工具链」那步失败了吗？"
-          }
-          cmake --preset ucrt64-release `
-            -DCMAKE_MAKE_PROGRAM="$env:UCRT64_BIN/ninja.exe" `
-            -DCMAKE_C_COMPILER="$env:UCRT64_BIN/gcc.exe" `
-            -DCMAKE_CXX_COMPILER="$env:UCRT64_BIN/g++.exe" `
-            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe" `
-            -DGRT_WERROR=ON
-          if ($LASTEXITCODE -ne 0) { throw "配置失败（exit=$LASTEXITCODE）" }
-          $line = Select-String -Path "build/release/CMakeCache.txt" -Pattern '^GRT_OBJDUMP:' -ErrorAction SilentlyContinue
-          if (-not $line -or $line.Line -match 'NOTFOUND') {
-            throw "CMake 没找到 objdump → Shell DLL 导出表校验会被跳过（§2.3 要求 CI 必须执行）"
-          }
-          cmake --build build/release --parallel
-          if ($LASTEXITCODE -ne 0) { throw "构建失败（exit=$LASTEXITCODE）" }
+          $files = Get-ChildItem build -Recurse -File
+          "下载到的文件（共 $($files.Count) 个）："
+          $files | Select-Object -First 40 | ForEach-Object { "  $($_.FullName)" }
+          pwsh -NoProfile -File packaging/scripts/stage-artifacts.ps1 -Config Release -OutDir build -SearchRoot build
+          if ($LASTEXITCODE -ne 0) { throw "产物归位失败（exit=$LASTEXITCODE）" }
           $LASTEXITCODE = 0
 
       # 版本号 = 最新 tag + 0.0.1（每节上限 9，进位；一个 tag 都没有就用 1.0.0）

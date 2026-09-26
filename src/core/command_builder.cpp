@@ -363,7 +363,8 @@ bool BuildCommand(const BuildInput& in, BuiltCommand* out, BuildError* err) {
 
     // ---- 模板展开（按 " ; " 分段 → 多条命令）----
     // ---- 值型 flag 的轻校验：宁可在这里拦下，也不要让用户看到 git 那句难懂的报错 ----
-    if (!ValidateFlagValues(spec, in.flags, err)) return false;    const std::vector<std::wstring> flagsArgv = ExpandFlags(spec, in.flags, err);
+    if (!ValidateFlagValues(spec, in.flags, err)) return false;
+    const std::vector<std::wstring> flagsArgv = ExpandFlags(spec, in.flags, err);
     const std::wstring tmpl = W(spec.argvTemplate ? spec.argvTemplate : "");
 
     std::vector<std::wstring> segments;

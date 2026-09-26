@@ -293,14 +293,16 @@ void RunPlan(HWND hwnd, RstState* st, const RestorePlan& plan) {
             gitExe, repoRoot, plan,
             [hwnd](const std::wstring& cmd) {
                 auto* s = new std::string(U8(cmd) + "\r\n");
-                ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
             },
             [hwnd](const std::string& out) {
                 if (out.empty()) return;
                 auto* s = new std::string(out);
-                ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
             });
-        ::PostMessageW(hwnd, WM_GRT_RST_DONE, 0, reinterpret_cast<LPARAM>(new RestoreResult(std::move(r))));
+        // 窗口已销毁时 PostMessageW 失败 → 自己回收结果对象，避免泄漏
+        auto* done = new RestoreResult(std::move(r));
+        if (!::PostMessageW(hwnd, WM_GRT_RST_DONE, 0, reinterpret_cast<LPARAM>(done))) delete done;
     }).detach();
 }
 

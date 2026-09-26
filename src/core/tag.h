@@ -36,7 +36,9 @@ struct TagInfo {
     bool         onRemote = false;    // origin 上也有同名标签
 };
 
-// 读本地标签清单；remoteName 为空 = 只读本地，不连远端。
+// 读本地标签清单。
+// ★ 想"不连远端"必须传 **L"-"**：传空串会被 PickRemoteName() 当成 origin
+//   （踩过：开窗口时想省掉网络调用而传了空串/默认值，结果照样 `ls-remote`，开窗卡 6 秒）。
 // `git ls-remote --tags <remote>` 失败（离线/没远端）**不算致命**：
 // 此时 onRemote 全 false，函数仍返回 true。
 bool LoadTags(const std::wstring& gitExe, const std::wstring& repoRoot, std::vector<TagInfo>* out,

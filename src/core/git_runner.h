@@ -74,4 +74,15 @@ std::vector<std::pair<std::wstring, std::wstring>> BuildGitEnvironment(
 RunResult RunGitSync(const std::wstring& gitExe, const std::vector<std::wstring>& argv,
                      const std::wstring& cwd, uint32_t timeoutMs = 15000);
 
+// 便捷入口：跑一条 git 并把 stdout 转成 wstring（内部会 Trim；输出已是 UTF-8 → UTF-16）。
+//   exitCode / errOut 可选带回（errOut 为 Trim 后的 stderr）。
+//   原先 tag/squash/restore/remote 各自复制了一份逐字相同的实现，这里收敛成唯一一份。
+std::wstring RunGitOut(const std::wstring& gitExe, const std::wstring& repoRoot,
+                       const std::vector<std::wstring>& argv, int* exitCode = nullptr,
+                       std::wstring* errOut = nullptr, uint32_t timeoutMs = 30000);
+
+// 便捷入口：git rev-parse --short <rev>（失败返回空串）。
+std::wstring RevParseShort(const std::wstring& gitExe, const std::wstring& repoRoot,
+                           const std::wstring& rev, uint32_t timeoutMs = 30000);
+
 }  // namespace grt

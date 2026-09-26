@@ -43,6 +43,10 @@ struct AiConfig {
     std::wstring apiKey;          // 来自 keyFilePath 的明文 Key（空 = 未设置）
     bool         keyFromFile = false;
     bool         keyFileUsable = false;   // 目录可写（不可写时界面要明确告知）
+    // 可选：把 Key 用 DPAPI（CryptProtectData）按**当前用户**加密后落盘，文件里是 `dpapi:<base64>`。
+    // 默认关（保持"明文、随时可查看与修改"的既有体验）；开启后换用户/换机器就解不开，
+    // 界面必须提示"需重填"。解不开时**不会**清空文件，只是读不到 Key 并给出说明。
+    bool         protectKey = false;
 };
 
 AiConfig LoadAiConfig();
@@ -100,6 +104,19 @@ ModelListResult FetchModelList(const AiConfig& cfg);
 
 // endpoint → 模型列表地址（导出来做单测：/chat/completions 与 /completions 会被替换成 /models）
 std::wstring AiModelsUrlFromEndpoint(const std::wstring& endpoint);
+
+// ------------------------------------------------------------ 端点安全判定
+// 是否指向**本机**（localhost / 127.0.0.0/8 / [::1]）。
+// 本地 OpenAI 兼容服务（Ollama / LM Studio / vLLM / llama.cpp server）通常**不需要 API Key**，
+// 所以"Key 为空"对本机端点不是错误，而是正常用法。
+// ★ 只按字面主机名判断，不做 DNS 解析：判错的后果只是"多要一个 Key"或"少一条告警"，
+//   绝不参与任何权限决策。
+bool IsLoopbackEndpoint(const std::wstring& url);
+
+// 是否"明文过网"：http:// 且不是本机。
+// 这种组合下 API Key 与提示词（含仓库路径、分支名、文件名）都是明文，界面必须给明确告警。
+// 但**不禁止**：内网代理/自建网关确实有这种用法，禁止会把它们一刀切掉。
+bool IsInsecureRemoteEndpoint(const std::wstring& url);
 
 // ------------------------------------------------------------ 提示词与解析
 // 由 CommandTable() 自动生成，保证与实际命令表永不脱节；

@@ -42,6 +42,16 @@ if(GRT_WERROR)
   add_compile_options(-Werror)
 endif()
 
+# GCC 静态分析（-fanalyzer）：找的是真实的资源泄漏 / 空指针 / 越界 / 重复释放，且**零第三方依赖**。
+# 默认 OFF（正常开发不跑，单文件约 2–7 秒）；本地或 CI 单独跑：
+#   cmake -S . -B build/analyze -DGRT_ANALYZER=ON && cmake --build build/analyze
+# 走 CMake 而不是自己拼 g++ 命令，是为了让每个目标拿到**正确**的包含路径与宏定义。
+option(GRT_ANALYZER "编译期开启 GCC 静态分析（-fanalyzer，明显变慢）" OFF)
+if(GRT_ANALYZER)
+  add_compile_options(-fanalyzer)
+  message(STATUS "已开启 GCC -fanalyzer 静态分析（编译会明显变慢）")
+endif()
+
 # 开发期传统注册（DllRegisterServer）与探针默认值随构建类型走：
 #   发行版（Release）的导出表**必须**只有 DllGetClassObject / DllCanUnloadNow（§2.8）
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -52,6 +62,7 @@ endif()
 option(GRT_DEV_REGISTER "编译 DllRegisterServer/DllUnregisterServer（仅开发期传统注册测试，§2.8）" ${GRT_DEV_REGISTER_DEFAULT})
 option(GRT_SHELL_PROBE  "把菜单构建期计时/探针日志编入 Shell DLL（仅开发构建，§4.8）" OFF)
 option(GRT_BUILD_TOOLS  "构建 Shell 探针/自检工具（GitRT.ShellProbe.exe）" ON)
+option(GRT_BUILD_TESTS  "构建无窗口的核心单元测试（GitRT.CoreTests.exe，注册进 CTest）" ON)
 
 add_subdirectory(src/core)
 add_subdirectory(src/gui)
@@ -64,6 +75,12 @@ endif()
 # 把两套自检注册成测试（§13.1 的 L1 落点在本工程用"内置自检"承载）：
 #   ctest --test-dir build/debug --output-on-failure
 enable_testing()
+
+# 无窗口的核心单元测试：纯函数/纯构造，任何环境（含无桌面会话的 CI）都能跑
+if(GRT_BUILD_TESTS)
+  add_subdirectory(src/tests)
+endif()
+
 if(GRT_BUILD_TOOLS)
   # 路径必须用原生命令行形式（Shell 的 IShellItem 解析器不接受混合分隔符）
   file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}" GRT_BIN_NATIVE)

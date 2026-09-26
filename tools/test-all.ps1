@@ -303,7 +303,7 @@ if ($SkipAi) {
     $pwshPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
     if (-not $pwshPath) { $pwshPath = (Get-Command powershell).Source }
     $mock = Start-Process -FilePath $pwshPath -PassThru -WindowStyle Hidden `
-        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$mockScript`" -Port $Port -LogFile `"$mockLog`""
+        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$mockScript`" -Port $Port -LogFile `"$mockLog`" -AllowNoAuth"
 
     $ready = $false
     for ($i = 0; $i -lt 40; $i++) {
@@ -355,11 +355,23 @@ if ($SkipAi) {
         $subject = G $repo log -1 --pretty=%s
         Check "C7 --ai-run 真实执行 AI 方案并提交" ($r.Exit -eq 0 -and $after -eq ($before + 1) -and $subject -match 'AI 提交') ("exit=$($r.Exit) count=$before->$after subject=$subject")
 
-        # C8 无 Key 时的降级
+        # C8 本机端点不填 Key：**应当照常发请求**（Ollama / LM Studio 这类服务不鉴权）
+        #    mock 用 -AllowNoAuth 启动模拟"不需要鉴权的本机服务"；日志里 auth=False 可佐证
         $env:GITRT_AI_API_KEY_ENV = 'GITRT_MISSING_KEY'
         Remove-Item Env:\GITRT_TEST_KEY -ErrorAction SilentlyContinue
         $r = Invoke-GitRT -AiPrompt '推送' -WorkDir $repo
-        Check "C8 未配置 Key → 明确报错 exit=4" ($r.Exit -eq 4 -and $r.Fields['key_set'] -eq '0' -and $r.Fields['error'] -match 'API Key') ("exit=$($r.Exit) error=$($r.Fields['error'])")
+        Check "C8 本机端点 + 无 Key → 照常请求（key_set=0 且 http=200）" `
+            ($r.Exit -eq 0 -and $r.Fields['key_set'] -eq '0' -and $r.Fields['http'] -eq '200') `
+            ("exit=$($r.Exit) key_set=$($r.Fields['key_set']) http=$($r.Fields['http']) error=$($r.Fields['error'])")
+
+        # C8b 远端端点不填 Key：仍必须**在本地拦下**（连请求都不发），避免误把无 Key 请求打到公网
+        $savedEndpoint = $env:GITRT_AI_ENDPOINT
+        $env:GITRT_AI_ENDPOINT = 'http://192.0.2.1:8080/v1/chat/completions'   # TEST-NET-1，不可路由
+        $r = Invoke-GitRT -AiPrompt '推送' -WorkDir $repo
+        Check "C8b 远端端点 + 无 Key → 本地拦下（exit=4 且 http=0）" `
+            ($r.Exit -eq 4 -and $r.Fields['key_set'] -eq '0' -and $r.Fields['http'] -eq '0' -and $r.Fields['error'] -match 'API Key') `
+            ("exit=$($r.Exit) http=$($r.Fields['http']) error=$($r.Fields['error'])")
+        $env:GITRT_AI_ENDPOINT = $savedEndpoint
 
         # C9 服务端 401
         $env:GITRT_AI_API_KEY_ENV = 'GITRT_TEST_KEY'

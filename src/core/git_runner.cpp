@@ -277,4 +277,22 @@ RunResult RunGitSync(const std::wstring& gitExe, const std::vector<std::wstring>
     return runner->RunSync(inv, nullptr);
 }
 
+std::wstring RunGitOut(const std::wstring& gitExe, const std::wstring& repoRoot,
+                       const std::vector<std::wstring>& argv, int* exitCode,
+                       std::wstring* errOut, uint32_t timeoutMs) {
+    const RunResult r = RunGitSync(gitExe, argv, repoRoot, timeoutMs);
+    if (exitCode) *exitCode = r.exitCode;
+    if (errOut) *errOut = Trim(W(r.err));
+    return W(r.out);
+}
+
+std::wstring RevParseShort(const std::wstring& gitExe, const std::wstring& repoRoot,
+                           const std::wstring& rev, uint32_t timeoutMs) {
+    if (gitExe.empty() || repoRoot.empty() || rev.empty()) return {};
+    int rc = 0;
+    const std::wstring s = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--short", rev}, &rc,
+                                         nullptr, timeoutMs));
+    return rc == 0 ? s : std::wstring();
+}
+
 }  // namespace grt

@@ -1,6 +1,7 @@
 #include "ai_client.h"
 
 #include <winhttp.h>
+#include <wincrypt.h>   // DPAPI：可选地把 Key 加密后落盘（CryptProtectData / CryptUnprotectData）
 
 #include <algorithm>
 #include <cctype>
@@ -63,6 +64,99 @@ bool DirWritable(const std::wstring& filePath) {
     return true;
 }
 
+// ------------------------------------------------ Key 的可选加密（DPAPI + Base64）
+// 落盘形式二选一：
+//   · 明文（默认，产品决策：方便直接查看/修改）
+//   · "dpapi:<base64(CryptProtectData(utf8(key)))>"（按当前用户加密，换机/换用户解不开）
+constexpr const char* kDpapiPrefix = "dpapi:";
+
+const char kBase64Tab[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string Base64Encode(const std::vector<BYTE>& in) {
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        const uint32_t v = (static_cast<uint32_t>(in[i]) << 16) |
+                           (static_cast<uint32_t>(in[i + 1]) << 8) | static_cast<uint32_t>(in[i + 2]);
+        out.push_back(kBase64Tab[(v >> 18) & 63]);
+        out.push_back(kBase64Tab[(v >> 12) & 63]);
+        out.push_back(kBase64Tab[(v >> 6) & 63]);
+        out.push_back(kBase64Tab[v & 63]);
+    }
+    const size_t rem = in.size() - i;
+    if (rem == 1) {
+        const uint32_t v = static_cast<uint32_t>(in[i]) << 16;
+        out.push_back(kBase64Tab[(v >> 18) & 63]);
+        out.push_back(kBase64Tab[(v >> 12) & 63]);
+        out += "==";
+    } else if (rem == 2) {
+        const uint32_t v = (static_cast<uint32_t>(in[i]) << 16) |
+                           (static_cast<uint32_t>(in[i + 1]) << 8);
+        out.push_back(kBase64Tab[(v >> 18) & 63]);
+        out.push_back(kBase64Tab[(v >> 12) & 63]);
+        out.push_back(kBase64Tab[(v >> 6) & 63]);
+        out.push_back('=');
+    }
+    return out;
+}
+
+int Base64Val(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+bool Base64Decode(const std::string& s, std::vector<BYTE>* out) {
+    out->clear();
+    uint32_t buf = 0;
+    int bits = 0;
+    for (const char c : s) {
+        if (c == '=' || c == '\r' || c == '\n') continue;
+        const int v = Base64Val(c);
+        if (v < 0) return false;
+        buf = (buf << 6) | static_cast<uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out->push_back(static_cast<BYTE>((buf >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
+
+std::vector<BYTE> DpapiProtect(const std::string& plain) {
+    DATA_BLOB in{};
+    in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plain.data()));
+    in.cbData = static_cast<DWORD>(plain.size());
+    DATA_BLOB out{};
+    if (!::CryptProtectData(&in, L"GitRT AI key", nullptr, nullptr, nullptr,
+                            CRYPTPROTECT_UI_FORBIDDEN, &out))
+        return {};
+    const std::vector<BYTE> v(out.pbData, out.pbData + out.cbData);
+    ::LocalFree(out.pbData);
+    return v;
+}
+
+bool DpapiUnprotect(const std::vector<BYTE>& blob, std::string* plain) {
+    if (blob.empty()) return false;
+    DATA_BLOB in{};
+    in.pbData = const_cast<BYTE*>(blob.data());
+    in.cbData = static_cast<DWORD>(blob.size());
+    DATA_BLOB out{};
+    if (!::CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr,
+                              CRYPTPROTECT_UI_FORBIDDEN, &out))
+        return false;
+    plain->assign(reinterpret_cast<const char*>(out.pbData), out.cbData);
+    ::LocalFree(out.pbData);
+    return true;
+}
+
+// Key 是否以密文形式存储（在 LoadAiConfig 里直接比对前缀即可，这里不另留函数）
+
 }  // namespace
 
 AiConfig LoadAiConfig() {
@@ -101,10 +195,33 @@ AiConfig LoadAiConfig() {
             if (t >= 5000 && t <= 600000) cfg.timeoutMs = static_cast<uint32_t>(t);
         }
         cfg.systemPrompt = JsonFindString(fileText, "systemPrompt", &v) ? W(v) : std::wstring();
+        // Key 有两种落盘形式：明文，或 DPAPI 密文（dpapi:<base64>）
+        std::string protectRaw;
+        const bool fileSaysProtect =
+            JsonFindRaw(fileText, "protectKey", &protectRaw) && protectRaw == "true";
+        bool storedProtected = false;
         if (JsonFindString(fileText, "apiKey", &v)) {
-            cfg.apiKey = Trim(W(v));
+            const std::wstring stored = Trim(W(v));
+            const std::wstring prefix = W(kDpapiPrefix);
+            if (stored.rfind(prefix, 0) == 0) {
+                storedProtected = true;
+                std::vector<BYTE> blob;
+                std::string plain;
+                if (Base64Decode(WideToUtf8(stored.substr(prefix.size())), &blob) &&
+                    DpapiUnprotect(blob, &plain)) {
+                    cfg.apiKey = Trim(W(plain));
+                } else {
+                    // 换用户/换机器就会走到这里：**不清文件**，只报明原因让用户重填
+                    cfg.apiKey.clear();
+                    cfg.loadNote += "（Key 是 DPAPI 密文，当前用户/机器解不开，请重新填写）";
+                }
+            } else {
+                cfg.apiKey = stored;
+            }
             cfg.keyFromFile = !cfg.apiKey.empty();
         }
+        // 复选框状态：文件里写了 protectKey，或者里面的 Key 本来就是密文
+        cfg.protectKey = fileSaysProtect || storedProtected;
         cfg.loadNote += "（已应用 " + WideToUtf8(cfg.keyFilePath) + "）";
     }
 
@@ -133,11 +250,23 @@ AiConfig LoadAiConfig() {
 }
 
 bool SaveAiConfig(const AiConfig& cfg) {
-    // ① 主存储：exe 同目录的 GitRT.ai.json（明文，含 Key）
+    // ① 主存储：exe 同目录的 GitRT.ai.json（默认明文含 Key；可选 DPAPI 密文）
+    std::string keyField = WideToUtf8(cfg.apiKey);
+    bool protectFailed = false;
+    if (cfg.protectKey && !cfg.apiKey.empty()) {
+        const std::vector<BYTE> blob = DpapiProtect(keyField);
+        if (blob.empty()) {
+            protectFailed = true;        // 加密失败 → 宁可丢 Key 也不明文落盘（见下）
+            keyField.clear();
+        } else {
+            keyField = std::string(kDpapiPrefix) + Base64Encode(blob);
+        }
+    }
     std::string json = "{\n";
     json += "  \"endpoint\": \"" + JsonEscape(WideToUtf8(cfg.endpoint)) + "\",\n";
     json += "  \"model\": \"" + JsonEscape(WideToUtf8(cfg.model)) + "\",\n";
-    json += "  \"apiKey\": \"" + JsonEscape(WideToUtf8(cfg.apiKey)) + "\",\n";
+    json += "  \"apiKey\": \"" + JsonEscape(keyField) + "\",\n";
+    json += "  \"protectKey\": " + std::string(cfg.protectKey ? "true" : "false") + ",\n";
     json += "  \"apiKeyEnv\": \"" + JsonEscape(cfg.apiKeyEnv) + "\",\n";
     json += "  \"timeoutMs\": " + std::to_string(cfg.timeoutMs) + ",\n";
     json += "  \"systemPrompt\": \"" + JsonEscape(WideToUtf8(cfg.systemPrompt)) + "\"\n";
@@ -153,7 +282,9 @@ bool SaveAiConfig(const AiConfig& cfg) {
     store.SetString("aiApiKeyEnv", cfg.apiKeyEnv);
     store.SetInt("aiTimeoutMs", static_cast<int>(cfg.timeoutMs));
     store.Save();
-    return ok;
+    // 勾了加密却加不上（DPAPI 失败）→ 报"保存失败"：此时文件里没有 Key，
+    // 宁可让用户看到失败并重试，也不把明文写进去（fail-closed）。
+    return ok && !protectFailed;
 }
 
 std::wstring ResolveApiKey(const AiConfig& cfg) {
@@ -280,6 +411,55 @@ std::wstring AiModelsUrlFromEndpoint(const std::wstring& endpointIn) {
     return u + L"/models";
 }
 
+// ------------------------------------------------------------ 端点安全判定
+namespace {
+
+// 取 endpoint 的主机名（小写）：跳过 scheme 与 userinfo，截到第一个 / ? #，去掉端口。
+std::wstring EndpointHost(const std::wstring& url) {
+    const std::wstring s = Trim(url);
+    const size_t scheme = s.find(L"://");
+    const size_t start = (scheme == std::wstring::npos) ? 0 : scheme + 3;
+    size_t end = s.size();
+    for (size_t i = start; i < s.size(); ++i) {
+        const wchar_t c = s[i];
+        if (c == L'/' || c == L'?' || c == L'#') {
+            end = i;
+            break;
+        }
+    }
+    std::wstring auth = s.substr(start, end - start);
+    const size_t at = auth.find(L'@');             // user:pass@host → host
+    if (at != std::wstring::npos) auth = auth.substr(at + 1);
+    if (!auth.empty() && auth[0] == L'[') {        // [::1]:11434 → [::1]
+        const size_t rb = auth.find(L']');
+        if (rb != std::wstring::npos) auth = auth.substr(0, rb + 1);
+    } else {
+        const size_t colon = auth.find(L':');
+        if (colon != std::wstring::npos) auth = auth.substr(0, colon);
+    }
+    return ToLowerAscii(auth);
+}
+
+}  // namespace
+
+bool IsLoopbackEndpoint(const std::wstring& url) {
+    const std::wstring host = EndpointHost(url);
+    if (host == L"localhost" || host == L"::1" || host == L"[::1]") return true;
+    // 127.0.0.0/8：必须整段都是数字与点，避免 "127.evil.com" 被当成回环
+    if (host.rfind(L"127.", 0) == 0) {
+        for (const wchar_t c : host)
+            if (!((c >= L'0' && c <= L'9') || c == L'.')) return false;
+        return true;
+    }
+    return false;
+}
+
+bool IsInsecureRemoteEndpoint(const std::wstring& url) {
+    const std::wstring s = Trim(url);
+    if (s.size() < 7 || _wcsnicmp(s.c_str(), L"http://", 7) != 0) return false;   // https / 其它 scheme
+    return !IsLoopbackEndpoint(s);
+}
+
 namespace {
 
 // 从 pos 处读一个 JSON 字符串字面量（含转义），成功返回真并把结束位置写回 end
@@ -323,14 +503,15 @@ ModelListResult FetchModelList(const AiConfig& cfg) {
         out.error = "接口地址为空";
         return out;
     }
-    if (key.empty()) {
-        out.error = "未配置 API Key";
+    // 本机服务（Ollama / LM Studio / vLLM …）通常不鉴权：Key 为空不是错误，照常发请求
+    if (key.empty() && !IsLoopbackEndpoint(out.url)) {
+        out.error = "未配置 API Key（远端服务需要；本机服务如 Ollama 可以不填）";
         return out;
     }
     std::vector<std::pair<std::wstring, std::wstring>> headers = {
         {L"Accept", L"application/json"},
-        {L"Authorization", L"Bearer " + key},
     };
+    if (!key.empty()) headers.push_back({L"Authorization", L"Bearer " + key});
     const HttpResponse r = HttpGetJson(out.url, headers, (std::min)(cfg.timeoutMs, 30000u));
     out.status = r.status;
     out.error = r.error;
@@ -493,9 +674,14 @@ AiPlan GeneratePlan(const AiConfig& cfg, const std::string& systemPrompt, const 
     AiPlan plan;
     const uint64_t t0 = ::GetTickCount64();
     const std::wstring key = ResolveApiKey(cfg);
-    if (key.empty()) {
+    // 本机服务不鉴权时允许没有 Key（否则 Ollama / LM Studio 这类端点根本用不了）
+    if (key.empty() && !IsLoopbackEndpoint(cfg.endpoint)) {
         plan.error = L"\u672a\u914d\u7f6e API Key\uff1a\u8bf7\u8bbe\u7f6e\u73af\u5883\u53d8\u91cf " +
-                     W(cfg.apiKeyEnv) + L"\uff08\u7136\u540e\u91cd\u542f GitRT\uff09";
+                     W(cfg.apiKeyEnv) +
+                     L"\uff08\u7136\u540e\u91cd\u542f GitRT\uff09\u3002\u82e5\u7528\u7684\u662f\u672c\u673a"
+                     L"\u670d\u52a1\uff08Ollama / LM Studio / vLLM\uff09\uff0c\u63a5\u53e3\u5730\u5740"
+                     L"\u5199\u6210 http://127.0.0.1:<\u7aef\u53e3>/v1/chat/completions \u5c31\u53ef\u4ee5"
+                     L"\u4e0d\u586b Key\u3002";
         return plan;
     }
     std::string body;
@@ -510,10 +696,10 @@ AiPlan GeneratePlan(const AiConfig& cfg, const std::string& systemPrompt, const 
     body += "}";
     plan.requestBody = body;
 
-    const std::vector<std::pair<std::wstring, std::wstring>> headers = {
+    std::vector<std::pair<std::wstring, std::wstring>> headers = {
         {L"Content-Type", L"application/json; charset=utf-8"},
-        {L"Authorization", L"Bearer " + key},
     };
+    if (!key.empty()) headers.push_back({L"Authorization", L"Bearer " + key});
     const HttpResponse resp = HttpPostJson(cfg.endpoint, headers, body, cfg.timeoutMs);
     plan.elapsedMs = ::GetTickCount64() - t0;
     plan.httpStatus = resp.status;

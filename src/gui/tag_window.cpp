@@ -157,12 +157,17 @@ std::wstring KindText(const TagInfo& t) {
 }
 
 // ------------------------------------------------------------------ 列表/下拉
-void FillList(TgState* st) {
+// 拉标签清单。withRemote=true 会多做一次 `git ls-remote` —— 那是**网络调用**，
+// 仓库远端慢的时候要等好几秒。所以只有"用户显式点【刷新】"和"写操作完成后"才带上它；
+// **开窗时与复用窗口时用本地清单**（毫秒级），远端那一列显示"待核对"而不是假的"否"。
+void FillList(TgState* st, bool withRemote = false) {
     st->filling = true;
     ::SendMessageW(st->list, LVM_DELETEALLITEMS, 0, 0);
     std::wstring err;
     // 远端列：ls-remote 失败（离线/没有远端）不算致命，core 会把 onRemote 全置 false
-    const bool ok = LoadTags(App().gitExe, App().repoRoot, &st->tags, &err, L"origin");
+    const bool ok = LoadTags(App().gitExe, App().repoRoot, &st->tags, &err,
+                             withRemote ? L"origin" : L"-");   // ★ L"-" 才是"只读本地"的哨兵
+                                                              //   （传空串会被 PickRemoteName 当成 origin）
     for (size_t i = 0; i < st->tags.size(); ++i) {
         const TagInfo& t = st->tags[i];
         LVITEMW it{};
@@ -181,11 +186,20 @@ void FillList(TgState* st) {
         setCol(2, KindText(t));
         setCol(3, t.date);
         setCol(4, t.subject);
-        setCol(5, t.onRemote ? Str(IDS_TG_REMOTE_YES) : Str(IDS_TG_REMOTE_NO));
+        setCol(5, withRemote ? (t.onRemote ? Str(IDS_TG_REMOTE_YES) : Str(IDS_TG_REMOTE_NO))
+                             : L"待核对");
     }
     st->filling = false;
-    SetText(st->status, st->tags.empty() ? Str(IDS_TG_NO_TAGS)
-                                         : (ok ? Str(IDS_TG_SEL_NONE) : err));
+    // 本地清单先显示出来；远端那列还没核对时说清怎么核对（避免把"没查"误读成"没推送"）
+    if (st->tags.empty()) {
+        SetText(st->status, Str(IDS_TG_NO_TAGS));
+    } else if (!ok) {
+        SetText(st->status, err);
+    } else if (withRemote) {
+        SetText(st->status, Str(IDS_TG_SEL_NONE));
+    } else {
+        SetText(st->status, Str(IDS_TG_SEL_NONE) + L"（远端列显示「待核对」，点「刷新」核对）");
+    }
 }
 
 // 下拉里的标签名（刷新时**保留用户手输/已选的名字**，别把选择清掉）
@@ -390,17 +404,17 @@ void RunPlan(HWND hwnd, TgState* st, const TagPlan& plan, int op, const std::wst
             gitExe, repoRoot, plan,
             [hwnd](const std::wstring& cmd) {
                 auto* s = new std::string(U8(cmd) + "\r\n");
-                ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
             },
             [hwnd](const std::string& out) {
                 if (out.empty()) return;
                 auto* s = new std::string(out);
-                ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
             });
         const std::wstring reason = r.error.empty() ? std::wstring(L"未知原因") : r.error;
         const std::wstring line = r.ok ? doneText : ReplaceAll(failTpl, L"{msg}", reason);
         auto* s = new std::string(U8(line) + "\r\n");
-        ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+        if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
         ::PostMessageW(hwnd, WM_GRT_TAG_DONE, static_cast<WPARAM>(op) | (r.ok ? 0 : kTgFail), 0);
     }).detach();
 }
@@ -504,6 +518,7 @@ LRESULT CALLBACK TagProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ::SendMessageW(st->list, WM_SETFONT, reinterpret_cast<WPARAM>(Th().fontUi), TRUE);
             ListView_SetExtendedListViewStyle(st->list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES |
                                                              LVS_EX_DOUBLEBUFFER);
+            ThemeApplyToTableView(st->list);   // 深色模式下让列表与表头跟着变深（否则是亮白表格）
             struct Col { UINT res; int width; };
             const Col cols[] = {{IDS_TG_COL_NAME, Scale(190)},
                                 {IDS_TG_COL_HASH, Scale(80)},
@@ -619,7 +634,7 @@ LRESULT CALLBACK TagProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                   Th().fontUi);
 
             LayOut(hwnd, st);
-            FillList(st);
+            FillList(st, false);   // 开窗只读本地清单：`ls-remote` 是网络调用，会让窗口开得很慢
             FillCombo(st, {});
             GRT_LOGI("gui", "标签窗口已打开，标签数=" << st->tags.size());
             return 0;
@@ -627,6 +642,11 @@ LRESULT CALLBACK TagProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE:
             if (st) LayOut(hwnd, st);
             return 0;
+        case WM_ERASEBKGND:
+            // 窗口背景用主题刷填（本窗口类注册时用的是 COLOR_WINDOW 浅色画刷，
+            // 而深色模式下控件已被 WM_CTLCOLOR* 变深 → 不擦会"深浅割裂"）
+            if (HandleEraseBkgnd(hwnd, reinterpret_cast<HDC>(wp))) return 1;
+            break;
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLORBTN:
         case WM_CTLCOLOREDIT:
@@ -654,7 +674,7 @@ LRESULT CALLBACK TagProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (id == IDC_TG_REFRESH && code == BN_CLICKED) {
-                FillList(st);                            // 日志保留：里面是"跑过什么"的记录
+                FillList(st, true);   // 显式刷新：这里做一次远端核对（用户主动等这几秒）
                 FillCombo(st, GetText(st->pushCombo));
                 RefreshPreview(st);
                 return 0;
@@ -773,7 +793,7 @@ LRESULT CALLBACK TagProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const bool failed = (wp & kTgFail) != 0;
             SetBusy(st, false);   // running=false + 恢复按钮
             const std::wstring keep = GetText(st->pushCombo);
-            FillList(st);         // 先刷新再写状态行：刷新过程里的选择通知会把状态行盖掉
+            FillList(st, true);   // 写操作刚改过标签 → 顺手核对一次远端（先刷新再写状态行：刷新过程里的选择通知会把状态行盖掉）
             FillCombo(st, keep);
             std::wstring okText = Str(IDS_TG_DONE);
             if (!failed) {
@@ -838,11 +858,22 @@ void ShowTagWindow(HWND owner) {
     if (App().tags && ::IsWindow(App().tags)) {
         ::ShowWindow(App().tags, SW_SHOW);
         ::SetForegroundWindow(App().tags);
+        // ★ 复用已有窗口时**必须刷新列表**：这个窗口现在同时是「标签列表」命令的落点，
+        //   而那个命令的语义就是"看当前有哪些标签"。期间别人（CLI / 另一处 GUI 操作）可能
+        //   刚打过标签，只把旧窗口提到前台会显示**过期数据**。
+        if (TgState* st = StateOf(App().tags)) {
+            const std::wstring keep = GetText(st->pushCombo);
+            FillList(st, false);   // 复用开窗也走本地清单（毫秒级）；要核对远端点窗口里的「刷新」
+            FillCombo(st, keep);
+        }
         return;
     }
     if (App().repoRoot.empty()) {
-        ::MessageBoxW(owner, Str(IDS_MSG_NEED_REPO).c_str(), Str(IDS_TITLE_TAG).c_str(),
-                      MB_OK | MB_ICONINFORMATION);
+        // 自动化期间不弹模态框（会阻塞线程 → 自检挂死）；正常使用时会弹。
+        if (!ModalDialogsSuppressed()) {
+            ::MessageBoxW(owner, Str(IDS_MSG_NEED_REPO).c_str(), Str(IDS_TITLE_TAG).c_str(),
+                          MB_OK | MB_ICONINFORMATION);
+        }
         return;
     }
     HWND h = ::CreateWindowExW(WS_EX_CONTROLPARENT, kTagClass, Str(IDS_TITLE_TAG).c_str(),
@@ -855,6 +886,16 @@ void ShowTagWindow(HWND owner) {
         ::ShowWindow(h, SW_SHOW);
         ::UpdateWindow(h);
     }
+}
+
+// 自检用：标签窗口当前列表的行数（窗口没开 / 还没有列表 → -1）。
+// 为什么需要它：断言"点开标签列表能看到东西"，光判断"窗口开了"是不够的 ——
+// 空壳窗口同样"开了"。这比截图断言稳定，也能在 CI 的 gui_selftest 里跑。
+int TagWindowRowCount() {
+    if (!App().tags || !::IsWindow(App().tags)) return -1;
+    HWND list = ::GetDlgItem(App().tags, IDC_TG_LIST);
+    if (!list) return -1;
+    return static_cast<int>(::SendMessageW(list, LVM_GETITEMCOUNT, 0, 0));
 }
 
 }  // namespace grt::gui

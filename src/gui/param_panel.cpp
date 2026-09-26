@@ -136,24 +136,18 @@ void RequestPreview(HWND hwnd, PanelState* st) {
         uint16_t title = 0;
         std::wstring body;
         const bool ok = BuildViewText(id, paths, flags, &title, &body);
-        ::PostMessageW(hwnd, WM_GRT_PANEL_PREVIEW, 0,
-                       reinterpret_cast<LPARAM>(ok ? new std::wstring(body) : nullptr));
+        auto* payload = ok ? new std::wstring(body) : nullptr;
+        if (!::PostMessageW(hwnd, WM_GRT_PANEL_PREVIEW, 0, reinterpret_cast<LPARAM>(payload)))
+            delete payload;   // 窗口已销毁 → 自己回收，避免泄漏
     }).detach();
 }
 // 阶段二的标签 / 发布：这四个命令的 GUI 形态是**专用窗口**（tag_window / release_window），
 // 参数面板只当"启动器"——不再拼 argv，也不能因为参数没填就把「执行」禁用掉
 // （否则用户永远点不进窗口）。分派见下面 DoExecute 的 switch。
-bool UsesDedicatedWindow(CommandId id) {
-    switch (id) {
-        case IDS_CMD_TAG_CREATE:
-        case IDS_CMD_TAG_PUSH:
-        case IDS_CMD_TAG_DELETE:
-        case IDS_CMD_RELEASE_CREATE:
-            return true;
-        default:
-            return false;
-    }
-}
+// ★ "这个命令是不是打开专用窗口"只由 internal_commands.cpp 的 OpensDedicatedWindow 回答：
+//   以前这里另抄了一份名单（只有 4 个写命令），于是「标签列表 / 发布列表」这两个同样开窗口的
+//   命令不在名单里，点下去弹「该功能尚未实现」。判断集中到一处，以后加命令不会再漏。
+bool UsesDedicatedWindow(CommandId id) { return OpensDedicatedWindow(id); }
 
 void RebuildPreview(PanelState* st) {
     SyncValues(st);

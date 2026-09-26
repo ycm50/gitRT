@@ -5,13 +5,16 @@
 #   · 依据请求体里的关键词决定"模型输出"，从而覆盖各种分支
 #   · 所有响应都带同级 reasoning_content，用来验证客户端不会取错字段
 #   · 没有 Authorization 头时返回 401（验证错误处理）
+#   · -AllowNoAuth：**不需要鉴权**（模拟 Ollama / LM Studio 这类本机服务），
+#     用来验证 GitRT"本机端点可以不填 API Key"这条路；日志里 auth=True/False 会如实记录
 #
-# 用法: pwsh -File tools\mock-ai-server.ps1 -Port 18080 -LogFile <path>
+# 用法: pwsh -File tools\mock-ai-server.ps1 -Port 18080 -LogFile <path> [-AllowNoAuth]
 # ---------------------------------------------------------------------------
 param(
     [string]$LastBodyFile = "",
     [int]$Port = 18080,
-    [string]$LogFile = "$env:TEMP\GitRT-test\mock-ai.log"
+    [string]$LogFile = "$env:TEMP\GitRT-test\mock-ai.log",
+    [switch]$AllowNoAuth
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,7 +73,7 @@ try {
 
         # 模型列表（AI 设置界面「获取列表」用）：GET /v1/models 或 /models
         if ($path -match '/models$') {
-            if (-not $auth) {
+            if (-not $auth -and -not $AllowNoAuth) {
                 $bytes = [Text.Encoding]::UTF8.GetBytes('{"error":{"message":"missing api key"}}')
                 $ctx.Response.StatusCode = 401
                 $ctx.Response.ContentType = 'application/json'
@@ -89,7 +92,7 @@ try {
             continue
         }
 
-        if (-not $auth) {
+        if (-not $auth -and -not $AllowNoAuth) {
             $payload = '{"error":{"message":"missing api key","type":"invalid_request_error","code":"401"}}'
             $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
             $ctx.Response.StatusCode = 401

@@ -19,15 +19,6 @@ using namespace grt::gui;
 
 namespace {
 
-std::string NulJoin(const std::vector<std::string>& toks) {
-    std::string s;
-    for (const auto& t : toks) {
-        s += t;
-        s.push_back('\0');
-    }
-    return s;
-}
-
 bool WriteReport(const std::wstring& path, const std::wstring& text) {
     const std::string utf8 = WideToUtf8(text);
     std::vector<std::wstring> candidates{path};
@@ -53,9 +44,17 @@ bool WriteReport(const std::wstring& path, const std::wstring& text) {
 }
 
 // ------------------------------------------------------------------ 自检
-// 覆盖：porcelain 固件（真实 git 2.53 字节）/ 命令表 dry-run / flags 白名单 /
-//       参数校验 / 每个命令的参数面板可构建 / 仓库探测
+// 这里只留**真的需要窗口 / 资源 / 真 git 仓库**的用例：
+//       路径与缓存目录诊断 / 每个命令的参数面板可构建 / 仓库探测 /
+//       图标一致性 / 多行文本换行 / 执行后状态刷新 / 远端·还原·标签（真仓库）
+// 纯函数与纯构造的用例（porcelain 固件 / 命令表 dry-run / flags 白名单与参数校验 /
+// JSON 工具 / AI 响应解析与安全闸门 / AI 设置往返 / 克隆选项 / AI 只读白名单）
+// 已移到 **src/tests/core_tests.cpp**（GitRT.CoreTests.exe，CTest 用例 core_selftest）：
+// 那边是控制台程序，不需要窗口句柄，任何环境都能秒级跑。
 int RunSelfTest(HWND mainWnd, const std::wstring& outPath) {
+    // ★ 先抑制模态框：自检里任何一处弹框都会**阻塞线程**（自动化/CI 里没人去点），
+    //   于是回归的表现会从"变红"变成"永远不返回" —— 实测踩过（分派缺映射时报告文件都没生成）。
+    SuppressModalDialogs(true);
     std::wstring rep;
     int pass = 0, fail = 0;
     auto check = [&](bool ok, const std::wstring& what) {
@@ -99,136 +98,6 @@ int RunSelfTest(HWND mainWnd, const std::wstring& outPath) {
     }
     rep += L"\r\n";
 
-    // ---- 1. porcelain v2 固件 ----
-    {
-        const std::string fx = NulJoin({"# branch.oid 6c477e5c19685cf13fca7378eeae12055cff82c8",
-                                        "# branch.head main", "# stash 1", "? o.bin", "? renamed.txt"});
-        const RepoStatus s = ParsePorcelainV2(fx);
-        check(s.parsed && s.head == "main" && s.stashCount == 1 && s.entries.size() == 2 && s.untracked == 2,
-              L"porcelain: header \u4ee5 NUL \u7ed3\u5c3e\u3001\u7f3a branch.ab \u4ecd\u53ef\u89e3\u6790");
-    }
-    {
-        const std::string fx = NulJoin(
-            {"2 R. N... 100644 100644 100644 c1b0730e0133447badcfd47fd144e254807b06e1 "
-             "c1b0730e0133447badcfd47fd144e254807b06e1 R100 b.txt",
-             "a.txt", "? r.bin"});
-        const RepoStatus s = ParsePorcelainV2(fx);
-        check(s.entries.size() == 2 && s.entries[0].type == '2' && s.entries[0].path == "b.txt" &&
-                  s.entries[0].origPath == "a.txt" && s.staged == 1,
-              L"porcelain: \u91cd\u547d\u540d\u6761\u76ee\u53cc NUL token\uff08\u65b0\u8def\u5f84\u5728\u524d\uff09");
-    }
-    {
-        const std::string fx = NulJoin({"1 M. N... 100644 100644 100644 aaa bbb file with spaces.txt"});
-        const RepoStatus s = ParsePorcelainV2(fx);
-        check(s.entries.size() == 1 && s.entries[0].path == "file with spaces.txt" && s.staged == 1,
-              L"porcelain: \u542b\u7a7a\u683c\u8def\u5f84\u6309\u5b57\u6bb5\u6570\u5207\u5206\u6b63\u786e");
-    }
-    {
-        const std::string fx = NulJoin({"# branch.head (detached)"});
-        const RepoStatus s = ParsePorcelainV2(fx);
-        check(s.detached, L"porcelain: \u5206\u79bb\u5934\u6307\u9488\u8bc6\u522b");
-    }
-
-    // ---- 2. 命令表 dry-run ----
-    int built = 0, internal = 0, bad = 0;
-    for (size_t ci = 0; ci < CommandTableSize(); ++ci) {
-        const CommandSpec& c = CommandTable()[ci];
-        if (c.exec == ExecKind::Internal) {
-            ++internal;
-            continue;
-        }
-        BuildInput in;
-        in.spec = &c;
-        in.gitExe = App().gitExe;
-        in.repoRoot = L"C:\\selftest\\repo";
-        in.cwd = in.repoRoot;
-        in.paths = {L"C:\\selftest\\repo\\a.txt"};
-        if (c.paramKey) {
-            switch (c.param) {
-                case ParamKind::ExistingBranch: in.params[c.paramKey] = L"main"; break;
-                case ParamKind::BranchName:     in.params[c.paramKey] = L"feature/selftest"; break;
-                case ParamKind::Url:            in.params[c.paramKey] = L"https://example.com/a.git"; break;
-                case ParamKind::Revision:       in.params[c.paramKey] = L"HEAD~1"; break;
-                case ParamKind::CommitMessage:  in.params[c.paramKey] = L"selftest"; break;
-                case ParamKind::Pattern:        in.params[c.paramKey] = L"*.log"; break;
-                default:                        in.params[c.paramKey] = L"selftest"; break;
-            }
-        }
-        BuiltCommand out;
-        BuildError err;
-        if (!BuildCommand(in, &out, &err)) {
-            ++bad;
-            rep += L"       \u6784\u9020\u5931\u8d25 " + W(c.key) + L": " + err.message + L"\r\n";
-            continue;
-        }
-        if (out.argvList.empty()) {
-            ++bad;
-            rep += L"       \u7a7a\u547d\u4ee4 " + W(c.key) + L"\r\n";
-            continue;
-        }
-        ++built;
-    }
-    check(bad == 0, L"dry-run: " + std::to_wstring(built) + L" \u6761\u751f\u6210 argv\uff0c" +
-                        std::to_wstring(internal) + L" \u6761 Internal\uff0c\u5931\u8d25 " +
-                        std::to_wstring(bad));
-
-    // ---- 3. flags 白名单与参数校验 ----
-    {
-        const CommandSpec* push = FindCommandByKey("sync.push");
-        bool ok = false;
-        if (push) {
-            BuildInput in;
-            in.spec = push;
-            in.gitExe = App().gitExe;
-            in.repoRoot = L"C:\\selftest\\repo";
-            in.flags["force-with-lease"] = L"1";
-            in.flags["bogus-flag"] = L"1";   // 不在白名单 → 必须被忽略且不报错
-            BuiltCommand out;
-            BuildError err;
-            ok = BuildCommand(in, &out, &err);
-            bool hasLease = false, hasBogus = false;
-            if (ok && !out.argvList.empty()) {
-                for (const auto& a : out.argvList[0]) {
-                    if (a == L"--force-with-lease") hasLease = true;
-                    if (a.find(L"bogus") != std::wstring::npos) hasBogus = true;
-                }
-            }
-            ok = ok && hasLease && !hasBogus;
-        }
-        check(ok, L"flags \u767d\u540d\u5355\uff1a\u5df2\u767b\u8bb0\u9879\u8fdb\u5165 argv\uff0c\u672a\u767b\u8bb0\u9879\u88ab\u5ffd\u7565");
-    }
-    check(!IsValidBranchName(L"-evil") && !IsValidBranchName(L"a..b") && IsValidBranchName(L"feature/x"),
-          L"\u5206\u652f\u540d\u6821\u9a8c");
-    check(!IsValidUrl(L"--upload-pack=evil") && IsValidUrl(L"https://example.com/a.git") &&
-              IsValidUrl(L"git@github.com:u/r.git"),
-          L"URL \u6821\u9a8c\uff08\u62d2\u7edd\u4ee5 - \u5f00\u5934\u7684\u6ce8\u5165\uff09");
-    check(!IsValidRevision(L"HEAD;rm -rf /") && IsValidRevision(L"HEAD~1"), L"\u4fee\u8ba2\u8868\u8fbe\u5f0f\u6821\u9a8c");
-    {
-        // 互斥组：显式选 hard 之后，不得再套用默认的 mixed
-        const CommandSpec* rst = FindCommandByKey("adv.reset");
-        bool ok = false;
-        if (rst) {
-            BuildInput in;
-            in.spec = rst;
-            in.gitExe = App().gitExe;
-            in.repoRoot = L"C:\\selftest\\repo";
-            in.params["rev"] = L"HEAD~1";
-            in.flags["hard"] = L"1";
-            BuiltCommand out;
-            BuildError err;
-            ok = BuildCommand(in, &out, &err);
-            bool hasHard = false, hasMixed = false;
-            if (ok && !out.argvList.empty()) {
-                for (const auto& a : out.argvList[0]) {
-                    if (a == L"--hard") hasHard = true;
-                    if (a == L"--mixed") hasMixed = true;
-                }
-            }
-            ok = ok && hasHard && !hasMixed;
-        }
-        check(ok, L"\u4e92\u65a5\u9009\u9879\u7ec4\uff1a\u663e\u5f0f\u9009\u62e9\u540e\u4e0d\u518d"
-                 L"\u5957\u7528\u9ed8\u8ba4\u9879\uff08\u4e0d\u4f1a\u51fa\u73b0 --mixed --hard\uff09");
-    }
 
     // ---- 4. 每个命令的参数面板都可构建 ----
     {
@@ -246,154 +115,58 @@ int RunSelfTest(HWND mainWnd, const std::wstring& outPath) {
                   std::to_wstring(kCommandCount) + L" \u53ef\u521b\u5efa");
     }
 
+    // ---- 4b. 内部命令都得有"去向"（防"菜单里有、点下去弹未实现"）----
+    //   这类 bug 靠人眼看菜单发现不了：「标签列表 / 发布列表」就是这么漏了一整个增量的。
+    //   现在 ActionOfInternal() 是唯一一份映射，这里遍历命令表断言没有一个落到 Unimplemented。
+    {
+        int internal = 0, missing = 0;
+        std::wstring titles;
+        for (size_t ci = 0; ci < CommandTableSize(); ++ci) {
+            const CommandSpec& c = CommandTable()[ci];
+            if (c.exec != ExecKind::Internal) continue;
+            ++internal;
+            if (ActionOfInternal(c.id) == InternalAction::Unimplemented) {
+                ++missing;
+                titles += L" " + Str(c.titleRes);
+            }
+        }
+        check(missing == 0,
+              L"\u5185\u90e8\u547d\u4ee4\u90fd\u6709\u53bb\u5411\uff1a" +
+                  std::to_wstring(internal - missing) + L"/" + std::to_wstring(internal) +
+                  (missing ? (L"\uff08\u672a\u5b9e\u73b0\uff1a" + titles + L"\uff09") : std::wstring()));
+
+        // 另一半：这 4 个**写**命令的 ExecKind 是 CliPanel（不是 Internal），它们能开窗口
+        // 全靠 OpensDedicatedWindow()。参数面板那份名单以前是另抄的、改成委托同一份判断之后，
+        // 必须盯住它们没被漏掉（漏掉的表现是"点执行变成拼 argv 去跑 git"）。
+        {
+            const CommandId kWriteWindows[] = {2308, 2309, 2310, 2312};   // tag.create/push/delete, release.create
+            int okCount = 0;
+            std::wstring bad;
+            for (CommandId cid : kWriteWindows) {
+                const CommandSpec* sp = FindCommand(cid);
+                if (sp && sp->exec == ExecKind::CliPanel && OpensDedicatedWindow(cid)) {
+                    ++okCount;
+                } else {
+                    bad += (sp ? Str(sp->titleRes) : std::wstring(L"?")) + L" ";
+                }
+            }
+            check(okCount == 4,
+                  L"\u53ef\u5f00\u4e13\u7528\u7a97\u53e3\u7684\u5199\u547d\u4ee4\u4ecd\u63a5\u5230\u7a97\u53e3\uff1a" +
+                      std::to_wstring(okCount) + L"/4" + (bad.empty() ? std::wstring() : L"\uff08" + bad + L"\uff09"));
+        }
+    }
+
     // ---- 5. 仓库探测 ----
     {
         const RepoProbeResult r = ProbeRepo(GetModuleDir());
         rep += L"       \u63a2\u6d4b\u672c\u5de5\u7a0b\u76ee\u5f55: " + RepoFlagsToString(r.flags) +
                L"  root=" + r.repoRoot + L"\r\n";
-        // ---- 6. JSON 工具 ----
-    {
-        const std::string raw = std::string("a\"b\\c\nd\te\rf\x01g \xe4\xb8\xad\xe6\x96\x87 \xf0\x9f\x98\x80");
-        check(JsonUnescape(JsonEscape(raw)) == raw,
-              L"JSON \u8f6c\u4e49/\u53cd\u8f6c\u4e49\u5f80\u8fd4\uff08\u5f15\u53f7/\u53cd\u659c\u6760/"
-              L"\u63a7\u5236\u7b26/\u4e2d\u6587/emoji\uff09");
-        check(JsonUnescape("\\ud83d\\ude00") == "\xf0\x9f\x98\x80",
-              L"JSON \\u \u4ee3\u7406\u5bf9\u89e3\u7801\u4e3a UTF-8");
-    }
-    {
-        // DeepSeek 风格响应：同级的 reasoning_content 绝不能误命中 content
-        const std::string env =
-            "{\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
-            "\"reasoning_content\":\"should not match\","
-            "\"content\":\"{\\\"command\\\":\\\"sync.push\\\",\\\"flags\\\":"
-            "{\\\"set-upstream\\\":\\\"1\\\"},\\\"explanation\\\":"
-            "\\\"\\u63a8\\u9001\\u5f53\\u524d\\u5206\\u652f\\\"}\"}}]}";
-        std::string content;
-        const bool got = ExtractChatContent(env, &content);
-        check(got && content.find("sync.push") != std::string::npos &&
-                  content.find("should not match") == std::string::npos,
-              L"\u4ece OpenAI \u517c\u5bb9\u54cd\u5e94\u53d6\u51fa message.content"
-              L"\uff08\u4e0d\u8bef\u547d\u4e2d reasoning_content\uff09");
-        AiPlan p = ParsePlanReply(content);
-        check(p.ok && !p.noCommand && p.commandKey == "sync.push" &&
-                  p.flags["set-upstream"] == "1" &&
-                  p.explanation == L"\u63a8\u9001\u5f53\u524d\u5206\u652f",
-              L"\u89e3\u6790\u8ba1\u5212\uff08command/flags/explanation\uff0c\u542b JSON \\u \u8f6c\u4e49\uff09");
-    }
-    {
-        const AiPlan p = ParsePlanReply("```json\n{\"command\":\"none\",\"explanation\":\"nope\"}\n```");
-        check(p.ok && p.noCommand, L"\u89e3\u6790\u8ba1\u5212\uff1amarkdown \u56f4\u680f + none \u5206\u652f");
-    }
-    {
-        const AiPlan p = ParsePlanReply("you should just run git push");
-        check(!p.ok && !p.error.empty(), L"\u975e JSON \u56de\u590d\u88ab\u62d2\u7edd");
-    }
-    {
-        AiConfig tcfg;   // 空 systemPrompt = 用内置默认，自检"提示词含全部 key"
-        const std::string prompt = EffectiveSystemPrompt(tcfg, [](uint16_t id) { return WideToUtf8(Str(id)); });
-        bool allKeys = true;
-        for (size_t i = 0; i < CommandTableSize(); ++i)
-            if (prompt.find(CommandTable()[i].key) == std::string::npos) { allKeys = false; break; }
-        check(allKeys, L"\u7cfb\u7edf\u63d0\u793a\u8bcd\u7531\u547d\u4ee4\u8868\u81ea\u52a8\u751f\u6210\uff0c"
-                       L"\u5305\u542b\u5168\u90e8 key");
+
     }
 
-    // ---- 7. AI 计划 → 命令（安全闸门） ----
+    // ---- 8b. 图标一致性（右键菜单用 DLL 的 101，任务栏用 exe 的 101）-------------
+    //   AI 设置的往返/Key 优先级/模型列表地址推导已移到 src/tests/core_tests.cpp
     {
-        AiPlan p;
-        p.ok = true;
-        p.commandKey = "definitely.not.a.command";
-        const auto r = PlanToCommand(p, L"C:\\selftest\\repo", {}, App().gitExe);
-        check(!r.ok && !r.error.empty(), L"\u95f8\u95e8\uff1a\u62d2\u7edd\u547d\u4ee4\u8868\u4e2d"
-                                          L"\u4e0d\u5b58\u5728\u7684\u547d\u4ee4");
-    }
-    {
-        AiPlan p;
-        p.ok = true;
-        p.commandKey = "sync.push";
-        p.flags["bogus"] = "1";
-        p.flags["set-upstream"] = "1";
-        const auto r = PlanToCommand(p, L"C:\\selftest\\repo", {}, App().gitExe);
-        bool hasWarn = false;
-        for (const auto& w : r.warnings)
-            if (w.find(L"bogus") != std::wstring::npos) hasWarn = true;
-        check(r.ok && hasWarn && r.built.display.find(L"--set-upstream") != std::wstring::npos,
-              L"\u95f8\u95e8\uff1a\u672a\u77e5\u9009\u9879\u88ab\u5ffd\u7565\u5e76\u63d0\u793a\uff0c"
-              L"\u767d\u540d\u5355\u9009\u9879\u8fdb\u5165 argv");
-    }
-    {
-        AiPlan p;
-        p.ok = true;
-        p.commandKey = "app.ai";
-        const auto r = PlanToCommand(p, L"C:\\selftest\\repo", {}, App().gitExe);
-        check(!r.ok, L"\u95f8\u95e8\uff1aInternal \u547d\u4ee4\u4e0d\u5141\u8bb8\u7531 AI \u6267\u884c");
-    }
-    {
-        AiPlan p;
-        p.ok = true;
-        p.commandKey = "sync.pull";
-        const auto r = PlanToCommand(p, L"", {}, App().gitExe);
-        check(!r.ok, L"\u95f8\u95e8\uff1a\u9700\u8981\u4ed3\u5e93\u7684\u547d\u4ee4\u5728\u672a\u9009"
-                     L"\u4ed3\u5e93\u65f6\u88ab\u62d2\u7edd");
-    }
-
-    check(true, L"\u4ed3\u5e93\u5ec9\u4ef7\u63a2\u6d4b\u53ef\u6267\u884c");
-    }
-
-    // ---- 8b. AI 设置：Key 明文存 exe 同目录（GitRT.ai.json）的往返与优先级 ----------
-    {
-        const std::wstring path = AiKeyFilePath();
-        const bool existed = ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
-        std::string backup;
-        if (existed) {
-            UniqueHandle h(::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-            if (h.get() != INVALID_HANDLE_VALUE) {
-                DWORD size = ::GetFileSize(static_cast<HANDLE>(h.get()), nullptr);
-                if (size > 0 && size < (1 << 20)) {
-                    backup.resize(size);
-                    DWORD got = 0;
-                    ::ReadFile(static_cast<HANDLE>(h.get()), backup.data(), size, &got, nullptr);
-                    backup.resize(got);
-                }
-            }
-        }
-        // 记录 config.json 里 AI 键的原值，测完还原（SaveAiConfig 会同步这几个键）
-        auto& store = ConfigStore::Instance();
-        store.Reload();
-        const std::string e0 = store.GetString("aiEndpoint"), m0 = store.GetString("aiModel");
-        const std::string k0 = store.GetString("aiApiKeyEnv");
-        const int t0 = store.GetInt("aiTimeoutMs", 60000);
-        bool roundTrip = false, keyWins = false, fileExists = false;
-        {
-            AiConfig cfg = LoadAiConfig();
-            cfg.endpoint = L"http://127.0.0.1:1/selftest";
-            cfg.model = L"selftest-model";
-            cfg.apiKey = L"sk-selftest-plain-key";
-            cfg.timeoutMs = 12345;
-            cfg.keyFilePath = path;
-            const bool saved = SaveAiConfig(cfg);
-            fileExists = ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
-            const AiConfig back = LoadAiConfig();
-            roundTrip = saved && back.endpoint == cfg.endpoint && back.model == cfg.model &&
-                        back.apiKey == cfg.apiKey && back.timeoutMs == 12345 && back.keyFromFile;
-            keyWins = ResolveApiKey(back) == L"sk-selftest-plain-key";
-        }
-        check(roundTrip, L"AI \u8bbe\u7f6e\u5f80\u8fd4\uff1a\u4fdd\u5b58\u5230 " + path + L" \u540e\u80fd\u8bfb\u56de");
-        check(fileExists && keyWins,
-              L"AI Key \u5c31\u4f4d\uff1a\u6587\u4ef6\u91cc\u7684\u660e\u6587 Key \u4f18\u5148\u4e8e\u73af\u5883\u53d8\u91cf\u751f\u6548");
-        // 模型列表地址推导（AI 设置里「获取模型列表」用的 GET 地址）
-        const bool urlOk =
-            AiModelsUrlFromEndpoint(L"https://api.deepseek.com/chat/completions") ==
-                L"https://api.deepseek.com/models" &&
-            AiModelsUrlFromEndpoint(L"https://api.deepseek.com/v1/chat/completions") ==
-                L"https://api.deepseek.com/v1/models" &&
-            AiModelsUrlFromEndpoint(L"http://127.0.0.1:8080/v1/") == L"http://127.0.0.1:8080/v1/models" &&
-            AiModelsUrlFromEndpoint(L"https://api.deepseek.com") == L"https://api.deepseek.com/models" &&
-            AiModelsUrlFromEndpoint(L"").empty();
-        check(urlOk, L"\u6a21\u578b\u5217\u8868\u5730\u5740\u63a8\u5bfc\uff1a/chat/completions \u2192 /models\uff08\u542b /v1\u3001\u5c3e\u90e8\u659c\u6760\u3001\u7a7a\u503c\uff09");
-
-        // 图标一致性：右键菜单用 DLL 的 101，任务栏用 exe 的 101 —— 两张必须是同一张图
         const HICON appIcon = GitRTAppIcon();
         const HICON genericIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
         check(appIcon != nullptr && appIcon != genericIcon,
@@ -404,25 +177,6 @@ int RunSelfTest(HWND mainWnd, const std::wstring& outPath) {
             check(wmBig == appIcon && wmSmall == appIcon,
                   L"\u4e3b\u7a97\u53e3\uff08\u4efb\u52a1\u680f\uff09\u56fe\u6807 == GitRT \u56fe\u6807\uff08WM_SETICON \u5df2\u751f\u6548\uff09");
         }
-
-        // 还原现场
-        if (existed && !backup.empty()) {
-            UniqueHandle h(::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                                         FILE_ATTRIBUTE_NORMAL, nullptr));
-            if (h.get() != INVALID_HANDLE_VALUE) {
-                DWORD wrote = 0;
-                ::WriteFile(static_cast<HANDLE>(h.get()), backup.data(),
-                            static_cast<DWORD>(backup.size()), &wrote, nullptr);
-            }
-        } else {
-            ::DeleteFileW(path.c_str());
-        }
-        store.Reload();
-        store.SetString("aiEndpoint", e0);
-        store.SetString("aiModel", m0);
-        store.SetString("aiApiKeyEnv", k0);
-        store.SetInt("aiTimeoutMs", t0);
-        store.Save();
     }
 
     // ---- 8c. 多行文本换行：Win32 Edit 不认裸 LF --------------------------------
@@ -435,71 +189,6 @@ int RunSelfTest(HWND mainWnd, const std::wstring& outPath) {
                             ToCrlf(L"\n\n") == L"\r\n\r\n" &&
                             ToCrlf(L"") == L"" && ToCrlf(L"x") == L"x";
         check(crlfOk, L"\u6362\u884c\u5f52\u4e00\u5316\uff1aLF \u2192 CRLF\uff08Edit \u63a7\u4ef6\u4e0d\u8ba4\u88f8 LF\uff09");
-    }
-    // ---- 8d. 克隆选项（深度/单分支/分支/无标签/部分克隆）--------------------------
-    {
-        auto joinArgv = [](const std::vector<std::wstring>& v) {
-            std::wstring s;
-            for (const auto& x : v) {
-                if (!s.empty()) s += L' ';
-                s += x;
-            }
-            return s;
-        };
-        const CommandSpec* clone = FindCommandByKey("repo.clone");
-        check(clone != nullptr && clone->flagCount == 6,
-              L"\u514b\u9686\u9009\u9879\uff1a\u547d\u4ee4\u8868\u91cc\u6709 6 \u4e2a\u9009\u9879\uff08\u542b\u6df1\u5ea6\uff09");
-        BuildInput in;
-        in.spec = clone;
-        in.cwd = L"C:\\selftest";
-        in.params["url"] = L"https://example.invalid/x.git";
-        in.flags["depth"] = L"1";
-        in.flags["single-branch"] = L"1";
-        in.flags["branch"] = L"main";
-        in.flags["no-tags"] = L"1";
-        in.flags["filter"] = L"blob:none";
-        BuiltCommand b;
-        BuildError e;
-        const bool built = clone && BuildCommand(in, &b, &e);
-        const std::wstring line = built ? joinArgv(b.argvList.front()) : std::wstring();
-        check(built && line.find(L"--depth=1") != std::wstring::npos &&
-                  line.find(L"--single-branch") != std::wstring::npos &&
-                  line.find(L"--branch=main") != std::wstring::npos &&
-                  line.find(L"--no-tags") != std::wstring::npos &&
-                  line.find(L"--filter=blob:none") != std::wstring::npos,
-              L"\u514b\u9686\u9009\u9879\uff1a\u6df1\u5ea6\u7b49\u90fd\u8fdb\u4e86 argv\uff08" + line + L"\uff09");
-        // 深度必须是正整数：拦在构造期，别让用户看 git 的报错
-        BuildInput bad = in;
-        bad.flags["depth"] = L"abc";
-        BuiltCommand b2;
-        BuildError e2;
-        check(!BuildCommand(bad, &b2, &e2) && e2.message.find(L"\u6b63\u6574\u6570") != std::wstring::npos,
-              L"\u514b\u9686\u9009\u9879\uff1a\u6df1\u5ea6\u975e\u6b63\u6574\u6570\u88ab\u62e6\u4e0b\uff08" + e2.message + L"\uff09");
-    }
-    // ---- 8e. AI 直出命令的只读白名单（"方案直接输出命令"的安全边界）----
-    {
-        std::vector<std::wstring> a;
-        std::wstring why;
-        auto ro = [&](const wchar_t* line) {
-            a.clear();
-            why.clear();
-            return ParseReadOnlyGitCommand(line, &a, &why);
-        };
-        check(ro(L"git status -sb") && a.size() == 2 && a[0] == L"status",
-              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit status -sb \u653e\u884c\uff08\u62c6\u6210 argv\uff09");
-        check(ro(L"git log --oneline -5"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit log \u653e\u884c");
-        check(ro(L"git branch -a"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit branch -a \u653e\u884c");
-        check(!ro(L"git branch newbranch"),
-              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit branch newbranch \u62d2\u7edd\uff08\u5efa\u5206\u652f\u662f\u5199\u64cd\u4f5c\uff09");
-        check(ro(L"git tag -l") && !ro(L"git tag v1.0"),
-              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit tag -l \u653e\u884c\u3001git tag v1.0 \u62d2\u7edd");
-        check(!ro(L"git push origin main"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit push \u62d2\u7edd");
-        check(!ro(L"git reset --hard HEAD~1"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit reset --hard \u62d2\u7edd");
-        check(ro(L"git remote -v") && !ro(L"git remote add o u"),
-              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1agit remote -v \u653e\u884c\u3001remote add \u62d2\u7edd");
-        check(!ro(L"rm -rf /"), L"AI \u53ea\u8bfb\u547d\u4ee4\uff1a\u975e git \u547d\u4ee4\u62d2\u7edd");
-        check(ro(L"git config --get user.name") && !ro(L"git config user.name x"),
-              L"AI \u53ea\u8bfb\u547d\u4ee4\uff1aconfig --get \u653e\u884c\u3001config \u5199\u5165\u62d2\u7edd");
     }
     // ---- 9. 执行 → 状态刷新（★ 用户可见行为）----------------------------------
     // 点"执行"后必须看到两件事：① 真实命令行出现在执行窗口里（UI 行为，见
@@ -668,6 +357,61 @@ int RunSelfTest(HWND mainWnd, const std::wstring& outPath) {
         check(sawAnnot, L"标签清单：附注标签 annotated==true（界面「类型」列显示附注）");
         check(DescribeTags(tags).find(L"\u9644\u6ce8") != std::wstring::npos,
               L"\u6807\u7b7e\u6e05\u5355\uff1a\u9762\u677f\u6587\u672c\u6807\u51fa\u4e86\u300c\u9644\u6ce8\u300d");
+
+        // 「标签列表 / 发布列表」点执行后打开的就是这两个窗口：**列表行数必须与 core 读到的条数一致**
+        //   （只断言"窗口开了"不够 —— 空壳窗口同样是"开了"。这条断言正是"菜单里有、点下去未实现"
+        //     那类 bug 的回归网，且能在 CI 的 gui_selftest 里跑，不依赖截图或人工。）
+        if (mainWnd) {
+            // ★ 走**真正的入口**：菜单点「标签列表」/面板点「执行」都会到 ExecuteInternalCommand()。
+            //   只直接调 ShowTagWindow() 只能证明"窗口自己能开"，证明不了"命令接到了窗口上" ——
+            //   而这次的 bug 恰恰在接线处（映射/分派没接上），所以断言必须从这里进去。
+            const CommandSpec* tagSpec = FindCommand(2307);   // tag.list
+            // ★ 先确认"命令确实接到了窗口上"再调用：Unimplemented 分支会弹**模态框**，
+            //   而模态框会阻塞调用线程 —— 自检/CI 里没人去点它，回归就会表现为**挂死**
+            //   （反向验证时实测到：报告文件根本没生成，任务一直不返回）。所以这里先断言映射，
+            //   映射不对就直接判失败，绝不去调那个会弹框的分支。
+            const bool tagWired = tagSpec && ActionOfInternal(2307) == InternalAction::TagWindow;
+            if (tagWired) ExecuteInternalCommand(mainWnd, *tagSpec, {}, nullptr);
+            else check(false, L"\u6807\u7b7e\u5217\u8868\uff1a\u547d\u4ee4\u6ca1\u63a5\u5230\u7a97\u53e3\u4e0a"
+                               L"\uff08\u6620\u5c04\u7f3a\u5931\uff1b\u4e3a\u514d\u5f39\u6a21\u6001\u6846"
+                               L"\u5361\u4f4f\u81ea\u68c0\uff0c\u672a\u771f\u6b63\u8c03\u7528\uff09");
+            const int rows = TagWindowRowCount();
+            check(rows == static_cast<int>(tags.size()),
+                  L"\u6807\u7b7e\u5217\u8868\uff1a\u70b9\u300c\u6267\u884c\u300d\u540e\u7a97\u53e3\u91cc"
+                  L"\u7684\u884c\u6570\u4e0e LoadTags \u4e00\u81f4\uff08" + std::to_wstring(rows) + L"/" +
+                      std::to_wstring(tags.size()) + L"\uff09");
+
+            // 复用路径：窗口**已经开着**时再点一次「标签列表」，必须刷新列表而不是把旧窗口提到前台
+            //   （这个命令的语义是"看当前有哪些标签"；期间可能在 CLI 或别处刚打过标签）。
+            //   造第三个标签，再走一次同一条命令，行数应从 2 变成 3。
+            const TagPlan t3 = BuildTagPlan(git, repo, L"selftest-l3", L"", false, L"HEAD", false);
+            if (t3.ok) ApplyTagPlan(git, repo, t3, {}, {});
+            if (tagWired) ExecuteInternalCommand(mainWnd, *tagSpec, {}, nullptr);   // 窗口已存在 → 复用分支
+            const int rows2 = TagWindowRowCount();
+            check(rows2 == static_cast<int>(tags.size()) + 1,
+                  L"\u6807\u7b7e\u5217\u8868\uff1a\u91cd\u590d\u70b9\u5f00\u4f1a\u5237\u65b0\uff08\u65b0\u589e"
+                  L"\u4e00\u4e2a\u6807\u7b7e\u540e\u884c\u6570 " + std::to_wstring(rows2) + L"/" +
+                      std::to_wstring(tags.size() + 1) + L"\uff09");
+            if (App().tags && ::IsWindow(App().tags)) ::DestroyWindow(App().tags);
+
+            // 发布：没装 gh 时两边都是 0，但**窗口必须照样开**（并在窗口里显示中文原因），
+            // 不能变成"点一下就弹错误"。
+            std::vector<ReleaseEntry> rels;
+            std::wstring rerr;
+            LoadReleases(git, repo, &rels, &rerr);
+            const CommandSpec* relSpec = FindCommand(2311);   // release.list
+            const bool relWired = relSpec && ActionOfInternal(2311) == InternalAction::ReleaseWindow;
+            if (relWired) ExecuteInternalCommand(mainWnd, *relSpec, {}, nullptr);
+            else check(false, L"\u53d1\u5e03\u5217\u8868\uff1a\u547d\u4ee4\u6ca1\u63a5\u5230\u7a97\u53e3\u4e0a"
+                               L"\uff08\u6620\u5c04\u7f3a\u5931\uff1b\u4e3a\u514d\u5f39\u6a21\u6001\u6846"
+                               L"\u5361\u4f4f\u81ea\u68c0\uff0c\u672a\u771f\u6b63\u8c03\u7528\uff09");
+            const int rrows = ReleaseWindowRowCount();
+            check(rrows == static_cast<int>(rels.size()),
+                  L"\u53d1\u5e03\u5217\u8868\uff1a\u70b9\u300c\u6267\u884c\u300d\u540e\u7a97\u53e3\u91cc"
+                  L"\u7684\u884c\u6570\u4e0e LoadReleases \u4e00\u81f4\uff08" + std::to_wstring(rrows) + L"/" +
+                      std::to_wstring(rels.size()) + L"\uff09");
+            if (App().releases && ::IsWindow(App().releases)) ::DestroyWindow(App().releases);
+        }
         // 重复标签：没 force 拒绝、有 force 放行并带 -f
         const TagPlan dup = BuildTagPlan(git, repo, L"selftest-lw", L"", false, L"HEAD", false);
         check(!dup.ok && dup.forceNeeded && dup.error.find(L"force") != std::wstring::npos,

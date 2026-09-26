@@ -24,4 +24,5 @@ file(GLOB GRT_CORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
 # （否则同一份匿名命名空间状态会出现两个实例）。
 add_library(gitrt_core STATIC ${GRT_CORE_SOURCES})
 target_include_directories(gitrt_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(gitrt_core PUBLIC ole32 oleaut32 shlwapi shell32 advapi32 winhttp)
+# crypt32：AI Key 的可选 DPAPI 加密（CryptProtectData / CryptUnprotectData 在 crypt32.dll）
+target_link_libraries(gitrt_core PUBLIC ole32 oleaut32 shlwapi shell32 advapi32 winhttp crypt32)

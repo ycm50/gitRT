@@ -21,15 +21,6 @@ bool IsHexHash(std::wstring_view s) {
     return true;
 }
 
-std::wstring RunOut(const std::wstring& gitExe, const std::wstring& repoRoot,
-                    const std::vector<std::wstring>& argv, int* exitCode = nullptr,
-                    std::wstring* errOut = nullptr) {
-    const RunResult r = RunGitSync(gitExe, argv, repoRoot, 30000);
-    if (exitCode) *exitCode = r.exitCode;
-    if (errOut) *errOut = Trim(W(r.err));
-    return W(r.out);
-}
-
 // 逐行取字段（用 \x1f 分隔，避免 subject 里的空格/中文干扰解析）
 std::vector<std::wstring> SplitLines(const std::wstring& s) {
     std::vector<std::wstring> out;
@@ -65,7 +56,7 @@ std::vector<std::wstring> SplitFields(const std::wstring& line, wchar_t sep) {
 // 未完成的 rebase / merge / cherry-pick 一律拒绝（改写历史时最怕叠在这些状态上）
 std::wstring PendingOperation(const std::wstring& gitExe, const std::wstring& repoRoot) {
     int rc = 0;
-    std::wstring gitDir = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--absolute-git-dir"}, &rc));
+    std::wstring gitDir = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--absolute-git-dir"}, &rc));
     if (rc != 0 || gitDir.empty()) return {};   // 不是仓库：交给后面的命令报错
     for (const wchar_t* name : {L"rebase-merge", L"rebase-apply", L"MERGE_HEAD", L"CHERRY_PICK_HEAD",
                                 L"REVERT_HEAD"}) {
@@ -82,7 +73,7 @@ std::vector<CommitEntry> LoadCommitList(const std::wstring& gitExe, const std::w
     const std::wstring fmt = L"--pretty=format:%H%x1f%h%x1f%an%x1f%ad%x1f%P%x1f%s";
     const std::wstring n = L"-n" + std::to_wstring(limit);
     int rc = 0;
-    const std::wstring text = RunOut(gitExe, repoRoot,
+    const std::wstring text = RunGitOut(gitExe, repoRoot,
                                     {L"log", L"--first-parent", n, fmt, L"--date=short"}, &rc);
     if (rc != 0) return out;
     for (const auto& line : SplitLines(text)) {
@@ -203,7 +194,7 @@ SquashPlan BuildSquashPlan(const std::wstring& gitExe, const std::wstring& repoR
     // 暂存区必须干净：reset --soft 会连着已暂存的内容一起提交
     {
         int rc = 0;
-        RunOut(gitExe, repoRoot, {L"diff-index", L"--cached", L"--quiet", L"HEAD"}, &rc);
+        RunGitOut(gitExe, repoRoot, {L"diff-index", L"--cached", L"--quiet", L"HEAD"}, &rc);
         if (rc != 0) {
             plan.error = L"暂存区还有未提交的改动，先提交或取消暂存，否则它们会被一起并进新提交";
             return plan;
@@ -212,7 +203,7 @@ SquashPlan BuildSquashPlan(const std::wstring& gitExe, const std::wstring& repoR
     // 仓库根（用于兜底校验）
     {
         int rc = 0;
-        const std::wstring top = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--show-toplevel"}, &rc));
+        const std::wstring top = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--show-toplevel"}, &rc));
         if (rc != 0) {
             plan.error = L"当前目录不是 git 仓库";
             return plan;
@@ -231,7 +222,7 @@ SquashPlan BuildSquashPlan(const std::wstring& gitExe, const std::wstring& repoR
     plan.oldestParent = chain[oldest + 1].hash;   // 链上后一个就是父（第一父链）
     {
         int rc = 0;
-        plan.newestTree = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", plan.newestHash + L"^{tree}"}, &rc));
+        plan.newestTree = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", plan.newestHash + L"^{tree}"}, &rc));
         if (rc != 0 || plan.newestTree.empty()) {
             plan.error = L"读取提交 " + chain[newest].shortHash + L" 的 tree 失败";
             return plan;
@@ -302,7 +293,7 @@ SquashResult ApplySquash(const std::wstring& gitExe, const std::wstring& repoRoo
             return res;
         }
         int rc = 0;
-        res.newHash = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"HEAD"}, &rc));
+        res.newHash = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"HEAD"}, &rc));
         res.ok = rc == 0 && !res.newHash.empty();
         if (!res.ok) res.error = L"提交已创建，但读取新提交哈希失败";
         return res;

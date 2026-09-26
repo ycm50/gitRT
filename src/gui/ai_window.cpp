@@ -133,9 +133,20 @@ void AppendResult(AiState* st, const std::wstring& text) {
 
 void UpdateConfigLabel(AiState* st) {
     const std::wstring key = ResolveApiKey(st->cfg);
+    const bool loopback = IsLoopbackEndpoint(st->cfg.endpoint);
+    std::wstring keyText;
+    if (!key.empty()) {
+        keyText = L"\u5df2\u8bbe\u7f6e \u2713";
+    } else if (loopback) {
+        keyText = L"\u672a\u8bbe\u7f6e\uff08\u672c\u673a\u670d\u52a1\u514d Key\uff09";   // Ollama 等
+    } else {
+        keyText = L"\u672a\u8bbe\u7f6e \u2717";
+    }
     std::wstring s = Str(IDS_AI_LABEL_CONFIG) + L": " + st->cfg.endpoint + L"  \u00b7  " + st->cfg.model +
-                     L"  \u00b7  Key(" + W(st->cfg.apiKeyEnv) + L"): " +
-                     (key.empty() ? L"\u672a\u8bbe\u7f6e \u2717" : L"\u5df2\u8bbe\u7f6e \u2713");
+                     L"  \u00b7  Key(" + W(st->cfg.apiKeyEnv) + L"): " + keyText;
+    // 明文过网（http + 非本机）：这里常驻提醒；设置窗口保存/测试时另有一次确认框
+    if (IsInsecureRemoteEndpoint(st->cfg.endpoint))
+        s += L"  \u00b7  \u26a0 \u660e\u6587 HTTP \u4e14\u975e\u672c\u673a\uff0cKey \u4f1a\u660e\u6587\u8fc7\u7f51";
     SetText(st->cfgLabel, s);
 }
 
@@ -147,7 +158,8 @@ void StartGenerate(HWND hwnd, AiState* st) {
         SetPlanText(st, Str(IDS_MSG_AI_EMPTY));
         return;
     }
-    if (ResolveApiKey(st->cfg).empty()) {
+    // 本机服务（Ollama / LM Studio…）不鉴权时不拦；远端才需要 Key
+    if (ResolveApiKey(st->cfg).empty() && !IsLoopbackEndpoint(st->cfg.endpoint)) {
         SetPlanText(st, Str(IDS_MSG_AI_NO_KEY) + L"\r\n\r\n" +
                             Str(IDS_AI_LABEL_CONFIG) + L":\r\n  " + st->cfg.configPath + L"\r\n" +
                             L"  aiEndpoint = " + st->cfg.endpoint + L"\r\n  aiModel = " + st->cfg.model +

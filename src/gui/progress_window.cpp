@@ -53,7 +53,10 @@ int LastPercent(const std::string& line) {
 }
 
 void PostLog(HWND hwnd, const std::string& line) {
-    ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(new std::string(line)));
+    auto* payload = new std::string(line);
+    // 窗口已销毁时 PostMessageW 会失败 → 自己回收（否则泄漏；-fanalyzer 会报 malloc-leak）
+    if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(payload)))
+        delete payload;
 }
 
 // 顺序执行 BuiltCommand 的多条命令：日志/进度都投给 hwnd，结果写进 oc。
@@ -132,7 +135,7 @@ void RunCommandSequence(HWND hwnd, const CommandSpec& spec, const BuiltCommand& 
 void WorkerProc(ProgState* st, HWND hwnd) {
     auto* oc = new TaskOutcome();
     RunCommandSequence(hwnd, st->spec, st->cmd, st->cancel.get(), oc);
-    ::PostMessageW(hwnd, WM_GRT_TASK_DONE, 0, reinterpret_cast<LPARAM>(oc));
+    if (!::PostMessageW(hwnd, WM_GRT_TASK_DONE, 0, reinterpret_cast<LPARAM>(oc))) delete oc;
 }
 
 void AppendLog(HWND edit, const std::wstring& line, size_t* counter) {
@@ -361,7 +364,7 @@ void RunBuiltCommandOn(HWND target, const CommandSpec& spec, const BuiltCommand&
     std::thread([target, job]() {
         auto* oc = new TaskOutcome();
         RunCommandSequence(target, job->spec, job->cmd, job->cancel.get(), oc);
-        ::PostMessageW(target, WM_GRT_TASK_DONE, 0, reinterpret_cast<LPARAM>(oc));
+        if (!::PostMessageW(target, WM_GRT_TASK_DONE, 0, reinterpret_cast<LPARAM>(oc))) delete oc;
         delete job;
     }).detach();
 }

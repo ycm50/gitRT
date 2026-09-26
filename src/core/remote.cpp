@@ -10,15 +10,6 @@ namespace grt {
 
 namespace {
 
-std::wstring RunOut(const std::wstring& gitExe, const std::wstring& repoRoot,
-                    const std::vector<std::wstring>& argv, int* exitCode = nullptr,
-                    std::wstring* errOut = nullptr) {
-    const RunResult r = RunGitSync(gitExe, argv, repoRoot, 30000);
-    if (exitCode) *exitCode = r.exitCode;
-    if (errOut) *errOut = Trim(W(r.err));
-    return W(r.out);
-}
-
 std::vector<std::wstring> SplitLines(const std::wstring& s) {
     std::vector<std::wstring> out;
     std::wstring cur;
@@ -50,12 +41,6 @@ std::vector<std::wstring> SplitFields(const std::wstring& line, wchar_t sep) {
     return out;
 }
 
-std::wstring ShortHash(const std::wstring& gitExe, const std::wstring& repoRoot, const std::wstring& rev) {
-    int rc = 0;
-    const std::wstring s = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--short", rev}, &rc));
-    return rc == 0 ? s : std::wstring();
-}
-
 }  // namespace
 
 // ------------------------------------------------------------------ 上游信息
@@ -67,7 +52,7 @@ RemoteInfo LoadRemoteInfo(const std::wstring& gitExe, const std::wstring& repoRo
     }
     int rc = 0;
     // 当前分支（detached 时 --abbrev-ref 给 "HEAD"）
-    info.branch = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--abbrev-ref", L"HEAD"}, &rc));
+    info.branch = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--abbrev-ref", L"HEAD"}, &rc));
     if (rc != 0) {
         info.branch.clear();
         info.error = L"这个仓库还没有提交（或不是 git 仓库）";
@@ -78,7 +63,7 @@ RemoteInfo LoadRemoteInfo(const std::wstring& gitExe, const std::wstring& repoRo
     // 上游：@{upstream} 的完整名字（没设置就失败 → hasUpstream=false）
     int upRc = 0;
     std::wstring upErr;
-    info.upstream = Trim(RunOut(gitExe, repoRoot,
+    info.upstream = Trim(RunGitOut(gitExe, repoRoot,
                                 {L"rev-parse", L"--abbrev-ref", L"--symbolic-full-name", L"@{upstream}"},
                                 &upRc, &upErr));
     if (upRc != 0 || info.upstream.empty()) {
@@ -89,14 +74,14 @@ RemoteInfo LoadRemoteInfo(const std::wstring& gitExe, const std::wstring& repoRo
     info.hasUpstream = true;
 
     int hRc = 0;
-    info.upstreamHash = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", info.upstream}, &hRc));
+    info.upstreamHash = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", info.upstream}, &hRc));
     if (hRc != 0) info.upstreamHash.clear();
     info.upstreamShort = info.upstreamHash.empty()
                              ? std::wstring()
-                             : Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--short", info.upstreamHash}));
+                             : RevParseShort(gitExe, repoRoot, info.upstreamHash);
 
     // 领先/落后：git rev-list --left-right --count <upstream>...HEAD → "落后\t领先"
-    const std::wstring counts = Trim(RunOut(gitExe, repoRoot,
+    const std::wstring counts = Trim(RunGitOut(gitExe, repoRoot,
                                             {L"rev-list", L"--left-right", L"--count",
                                              info.upstream + L"...HEAD"}));
     if (!counts.empty()) {
@@ -111,9 +96,9 @@ RemoteInfo LoadRemoteInfo(const std::wstring& gitExe, const std::wstring& repoRo
     }
 
     // 上游那条提交的 subject / 远端 URL
-    info.upstreamSubject = Trim(RunOut(gitExe, repoRoot,
+    info.upstreamSubject = Trim(RunGitOut(gitExe, repoRoot,
                                        {L"log", L"-1", L"--format=%s", info.upstream}));
-    std::wstring url = Trim(RunOut(gitExe, repoRoot, {L"remote", L"get-url",
+    std::wstring url = Trim(RunGitOut(gitExe, repoRoot, {L"remote", L"get-url",
                                                       info.upstream.substr(0, info.upstream.find(L'/'))}));
     info.remoteUrl = url;
     info.ok = true;
@@ -124,7 +109,7 @@ std::vector<std::wstring> LocalOnlyCommits(const std::wstring& gitExe, const std
                                            const RemoteInfo& info, size_t limit) {
     std::vector<std::wstring> out;
     if (!info.hasUpstream || info.upstream.empty()) return out;
-    const std::wstring txt = RunOut(gitExe, repoRoot,
+    const std::wstring txt = RunGitOut(gitExe, repoRoot,
                                     {L"rev-list", L"HEAD", L"--not", info.upstream,
                                      L"-n", std::to_wstring(limit)});
     for (const auto& line : SplitLines(txt)) {
@@ -142,7 +127,7 @@ RemoteBaseline LoadRemoteBaseline(const std::wstring& gitExe, const std::wstring
     for (const auto& h : LocalOnlyCommits(gitExe, repoRoot, base.info)) localOnly.insert(h);
     std::set<std::wstring> remoteOnly;
     if (base.info.hasUpstream && !base.info.upstream.empty()) {
-        const std::wstring txt = RunOut(gitExe, repoRoot,
+        const std::wstring txt = RunGitOut(gitExe, repoRoot,
                                         {L"rev-list", base.info.upstream, L"--not", L"HEAD",
                                          L"-n", std::to_wstring(limit)});
         for (const auto& line : SplitLines(txt)) remoteOnly.insert(Trim(line));
@@ -153,7 +138,7 @@ RemoteBaseline LoadRemoteBaseline(const std::wstring& gitExe, const std::wstring
         std::vector<std::wstring> argv{L"log", L"--first-parent", L"-n", std::to_wstring(limit),
                                        L"--pretty=format:%H%x1f%h%x1f%ad%x1f%s", L"--date=short"};
         argv.insert(argv.end(), revArgs.begin(), revArgs.end());
-        const std::wstring txt = RunOut(gitExe, repoRoot, argv);
+        const std::wstring txt = RunGitOut(gitExe, repoRoot, argv);
         for (const auto& line : SplitLines(txt)) {
             const auto f = SplitFields(line, 0x1f);
             if (f.size() < 4) continue;
@@ -209,7 +194,7 @@ std::vector<RemoteBranch> LoadRemoteBranches(const std::wstring& gitExe, const s
     std::vector<RemoteBranch> out;
     const RemoteInfo info = LoadRemoteInfo(gitExe, repoRoot);
     // ★ for-each-ref 的格式串**不支持** %x1f（会原样吐字面量，实测踩过），用 %09(Tab) 当分隔符
-    const std::wstring txt = RunOut(gitExe, repoRoot,
+    const std::wstring txt = RunGitOut(gitExe, repoRoot,
                                     {L"for-each-ref", L"--sort=-committerdate",
                                      L"--format=%(refname)%09%(refname:short)%09%(objectname:short)"
                                      L"%09%(committerdate:short)%09%(subject)",
@@ -259,7 +244,7 @@ std::wstring SetUpstream(const std::wstring& gitExe, const std::wstring& repoRoo
     if (up.find(L' ') != std::wstring::npos || up[0] == L'-') return L"上游名字不合法：" + up;
     int rc = 0;
     std::wstring err;
-    RunOut(gitExe, repoRoot, {L"branch", L"--set-upstream-to=" + up}, &rc, &err);
+    RunGitOut(gitExe, repoRoot, {L"branch", L"--set-upstream-to=" + up}, &rc, &err);
     if (rc != 0) return err.empty() ? (L"设置上游失败：" + up) : err;
     return {};
 }
@@ -267,15 +252,15 @@ std::wstring SetUpstream(const std::wstring& gitExe, const std::wstring& repoRoo
 // ------------------------------------------------------------------ 远端地址管理
 std::vector<RemoteEntry> LoadRemotes(const std::wstring& gitExe, const std::wstring& repoRoot) {
     std::vector<RemoteEntry> out;
-    const std::wstring names = RunOut(gitExe, repoRoot, {L"remote"});
+    const std::wstring names = RunGitOut(gitExe, repoRoot, {L"remote"});
     for (const auto& n : SplitLines(names)) {
         const std::wstring name = Trim(n);
         if (name.empty()) continue;
         RemoteEntry e;
         e.name = name;
-        e.fetchUrl = Trim(RunOut(gitExe, repoRoot, {L"remote", L"get-url", name}));
+        e.fetchUrl = Trim(RunGitOut(gitExe, repoRoot, {L"remote", L"get-url", name}));
         int rc = 0;
-        e.pushUrl = Trim(RunOut(gitExe, repoRoot, {L"remote", L"get-url", L"--push", name}, &rc));
+        e.pushUrl = Trim(RunGitOut(gitExe, repoRoot, {L"remote", L"get-url", L"--push", name}, &rc));
         if (rc != 0) e.pushUrl.clear();
         out.push_back(std::move(e));
     }
@@ -317,7 +302,7 @@ std::wstring AddRemote(const std::wstring& gitExe, const std::wstring& repoRoot,
     }
     int rc = 0;
     std::wstring err;
-    RunOut(gitExe, repoRoot, {L"remote", L"add", Trim(name), Trim(url)}, &rc, &err);
+    RunGitOut(gitExe, repoRoot, {L"remote", L"add", Trim(name), Trim(url)}, &rc, &err);
     if (rc != 0) return err.empty() ? L"添加远端失败" : err;
     return {};
 }
@@ -333,7 +318,7 @@ std::wstring SetRemoteUrl(const std::wstring& gitExe, const std::wstring& repoRo
     if (!exists) return L"没有这个远端：" + Trim(name) + L"（可以先「添加远端」）";
     int rc = 0;
     std::wstring err;
-    RunOut(gitExe, repoRoot, {L"remote", L"set-url", Trim(name), Trim(url)}, &rc, &err);
+    RunGitOut(gitExe, repoRoot, {L"remote", L"set-url", Trim(name), Trim(url)}, &rc, &err);
     if (rc != 0) return err.empty() ? L"改远端地址失败" : err;
     return {};
 }
@@ -343,7 +328,7 @@ std::wstring RemoveRemote(const std::wstring& gitExe, const std::wstring& repoRo
     if (const std::wstring e = ValidateRemoteName(name); !e.empty()) return e;
     int rc = 0;
     std::wstring err;
-    RunOut(gitExe, repoRoot, {L"remote", L"remove", Trim(name)}, &rc, &err);
+    RunGitOut(gitExe, repoRoot, {L"remote", L"remove", Trim(name)}, &rc, &err);
     if (rc != 0) return err.empty() ? L"删除远端失败" : err;
     return {};
 }
@@ -354,7 +339,7 @@ std::wstring FetchRemote(const std::wstring& gitExe, const std::wstring& repoRoo
     if (!r.empty()) argv.push_back(r);
     int rc = 0;
     std::wstring err;
-    RunOut(gitExe, repoRoot, argv, &rc, &err);
+    RunGitOut(gitExe, repoRoot, argv, &rc, &err);
     if (rc != 0) return err.empty() ? L"抓取失败（exit=" + std::to_wstring(rc) + L"）" : err;
     return {};
 }

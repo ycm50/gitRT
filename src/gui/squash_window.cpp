@@ -224,14 +224,16 @@ void StartMerge(HWND hwnd, SqState* st) {
             gitExe, repoRoot, plan,
             [hwnd](const std::wstring& cmd) {
                 auto* s = new std::string(U8(L"> " + cmd) + "\r\n");
-                ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
             },
             [hwnd](const std::string& out) {
                 if (out.empty()) return;
                 auto* s = new std::string(out);
-                ::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s));
+                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
             });
-        ::PostMessageW(hwnd, WM_GRT_SQ_DONE, 0, reinterpret_cast<LPARAM>(new SquashResult(r)));
+        // 窗口已销毁时 PostMessageW 失败 → 自己回收结果对象，避免泄漏
+        auto* done = new SquashResult(r);
+        if (!::PostMessageW(hwnd, WM_GRT_SQ_DONE, 0, reinterpret_cast<LPARAM>(done))) delete done;
     }).detach();
 }
 

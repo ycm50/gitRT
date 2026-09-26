@@ -226,44 +226,79 @@ bool BuildViewText(CommandId id, const std::vector<std::wstring>& paths,
             return false;
     }
 }
+// ------------------------------------------------------------ 内部命令的"去向"
+// 唯一一份映射：ExecuteInternalCommand 用它分派，GUI 自检也用它遍历命令表断言
+// "每个内部命令都有去处"——「标签列表/发布列表」就是漏在这里才点了弹「尚未实现」。
+namespace {
+// 自动化（自检/CI）期间抑制模态框：模态框会阻塞调用线程，没人点就永远不返回。
+// 实测：分派缺映射时，自检不是"变红"而是挂死（报告文件都没生成），CI 会拖到超时。
+bool gSuppressModal = false;
+}  // namespace
+
+void SuppressModalDialogs(bool suppress) { gSuppressModal = suppress; }
+bool ModalDialogsSuppressed() { return gSuppressModal; }
+
+InternalAction ActionOfInternal(CommandId id) {
+    switch (id) {
+        case 1003: return InternalAction::Console;
+        case 1004: return InternalAction::Terminal;
+        case 1104: return InternalAction::Gitignore;
+        case 1108: return InternalAction::SquashWindow;
+        case 1401:   // inspect.log
+        case 1402:   // inspect.diff
+        case 1403: return InternalAction::TextWindow;
+        case 1405: return InternalAction::StatusView;
+        case 1701: return InternalAction::Settings;
+        case 1702: return InternalAction::Doctor;
+        case 1703: return InternalAction::Ai;
+        case 2109: return InternalAction::RestoreWindow;
+        case 2110: return InternalAction::RemoteWindow;
+        // ★ 标签/发布：**列表与写操作开同一个窗口**（那个窗口本身就是"列表 + 表单 + 预览 + 日志"，
+        //   选中列表行还会自动填进表单）。tag.list(2307) / release.list(2311) 以前漏在这里，
+        //   于是菜单里看得见、点下去弹「该功能尚未实现」。
+        case 2307:   // tag.list —— 标签列表
+        case 2308:   // tag.create —— 打标签
+        case 2309:   // tag.push —— 推送标签
+        case 2310: return InternalAction::TagWindow;      // tag.delete —— 删除标签（窗口里二次确认）
+        case 2311:   // release.list —— 发布列表
+        case 2312: return InternalAction::ReleaseWindow;  // release.create —— 创建发布（gh）
+        default:   return InternalAction::Unimplemented;
+    }
+}
+
+bool OpensDedicatedWindow(CommandId id) {
+    switch (ActionOfInternal(id)) {
+        case InternalAction::TagWindow:
+        case InternalAction::ReleaseWindow:
+        case InternalAction::RestoreWindow:
+        case InternalAction::RemoteWindow:
+        case InternalAction::SquashWindow:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void ExecuteInternalCommand(HWND owner, const CommandSpec& spec, const std::vector<std::wstring>& paths,
                             const std::map<std::string, std::wstring>* flags) {
-    switch (spec.id) {
-        case 1003:   // app.console：把主窗口带到前台
+    switch (ActionOfInternal(spec.id)) {
+        case InternalAction::Console:   // app.console：把主窗口带到前台
             if (App().main) {
                 ::ShowWindow(App().main, SW_RESTORE);
                 ::SetForegroundWindow(App().main);
             }
             return;
-        case 1004:   // app.terminal
+        case InternalAction::Terminal:   // app.terminal
             LaunchTerminal(owner, flags);
             return;
-        case 2109:   // history.restore —— 还原到提交
-            ShowRestoreWindow(owner);
-            return;
-        case 2110:   // remote.panel —— 远端分支与地址
-            ShowRemoteWindow(owner);
-            return;
-        // 标签 / 发布（阶段二）：写操作也有专用 GUI 窗口（列表 + 表单 + 命令预览 + 日志），
-        // 与 2109/2110 同一套打法；参数面板侧的改道见 param_panel.cpp 的 DoExecute。
-        case 2308:   // tag.create —— 打标签
-        case 2309:   // tag.push —— 推送标签
-        case 2310:   // tag.delete —— 删除标签（破坏性，窗口里二次确认）
-            ShowTagWindow(owner);
-            return;
-        case 2312:   // release.create —— 创建发布（gh）
-            ShowReleaseWindow(owner);
-            return;
-        case 1108: {   // commit.squash —— 合并所选提交（复选列表窗口）
-            ShowSquashWindow(owner);
-            return;
-        }
-        case 1104:   // commit.ignore
+        case InternalAction::Gitignore:   // commit.ignore
             AddToGitignore(owner, paths);
             return;
-        case 1401:   // inspect.log
-        case 1402:   // inspect.diff
-        case 1403: { // inspect.filelog —— 内容与面板自动预览同源（BuildViewText）
+        case InternalAction::SquashWindow:   // commit.squash —— 合并所选提交（复选列表窗口）
+            ShowSquashWindow(owner);
+            return;
+        case InternalAction::TextWindow: {   // inspect.log / diff / filelog
+            // 内容与面板自动预览同源（BuildViewText）
             uint16_t title = IDS_TITLE_LOG;
             std::wstring body;
             const std::map<std::string, std::wstring> emptyFlags;
@@ -272,23 +307,47 @@ void ExecuteInternalCommand(HWND owner, const CommandSpec& spec, const std::vect
             ShowTextWindow(owner, title, subtitle, body);
             return;
         }
-        case 1405:   // inspect.status：切回状态视图
+        case InternalAction::StatusView:   // inspect.status：切回状态视图
             if (App().main) ::PostMessageW(App().main, WM_GRT_SHOW_STATUS, 0, 0);
             return;
-        case 1701:   // app.settings
+        case InternalAction::Settings:   // app.settings
             // 真正能用的设置界面：AI（端点/模型/Key/超时 + 测试连接）。
             // Key 按产品决策**明文**存 exe 同目录的 GitRT.ai.json（见 settings_window.cpp 顶部说明）。
             ShowSettingsWindow(owner);
             return;
-        case 1702:   // app.doctor
+        case InternalAction::Doctor:   // app.doctor
             ShowTextWindow(owner, IDS_TITLE_DOCTOR, App().repoRoot, BuildDoctorReport());
             return;
-        case 1703:   // app.ai
+        case InternalAction::Ai:   // app.ai
             ShowAiWindow(owner);
             return;
-        default:
-            ::MessageBoxW(owner, Str(IDS_MSG_NOT_IMPLEMENTED).c_str(), Str(spec.titleRes).c_str(),
-                          MB_OK | MB_ICONINFORMATION);
+        case InternalAction::RestoreWindow:   // history.restore —— 还原到提交
+            ShowRestoreWindow(owner);
+            return;
+        case InternalAction::RemoteWindow:   // remote.panel —— 远端分支与地址
+            ShowRemoteWindow(owner);
+            return;
+        // 标签 / 发布（阶段二）：专用 GUI 窗口（列表 + 表单 + 命令预览 + 日志）。
+        // 列表命令（tag.list / release.list）与写命令用的是同一个窗口。
+        case InternalAction::TagWindow:
+            ShowTagWindow(owner);
+            return;
+        case InternalAction::ReleaseWindow:
+            ShowReleaseWindow(owner);
+            return;
+        // ★ 这里**故意不写 `default:`**：switch 的目标类型是枚举 InternalAction，缺任何一个枚举值都会
+        //   被 -Wswitch 抓出来（本项目 -Werror）→ **编译期**就挡住"新增一种去向却忘了分派"。
+        //   另一个原因来自实测：一旦真落到这里，模态框会**阻塞调用线程** —— 自检/CI 里没人去点它，
+        //   于是"回归"表现为**挂死**（我反向验证时实测到：报告文件根本没生成），比失败更糟。
+        //   所以自检侧也加了"先确认映射实现了再调用"的前置判断（见 main.cpp）。
+        case InternalAction::Unimplemented:
+            // 内部命令漏映射时会走到这里（自检的"内部命令都有去向"断言会在 CI 里先把它挡下来）。
+            // 除了弹框，也写一条错误日志：日志里能看到是**哪个**命令漏了，便于定位。
+            GRT_LOGE("gui", "内部命令没有实现去向 id=" << spec.id << " key=" << spec.key);
+            if (!gSuppressModal) {
+                ::MessageBoxW(owner, Str(IDS_MSG_NOT_IMPLEMENTED).c_str(), Str(spec.titleRes).c_str(),
+                              MB_OK | MB_ICONINFORMATION);
+            }
             return;
     }
 }

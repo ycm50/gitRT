@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# 编辑器配置（与 .gitattributes 配套）
+#   · 行尾/编码的"真相"在 .gitattributes，这里只是让编辑器别自作主张
+#   · 缩进量跟随仓库现有风格：C/C++ 4 空格，CMake/.rc/JSON/YAML 2 空格
+# ---------------------------------------------------------------------------
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.{c,cc,cpp,h,hpp}]
+indent_size = 4
+
+[*.{cmake,in}]
+indent_size = 2
+
+[CMakeLists.txt]
+indent_size = 2
+
+[*.{json,yml,yaml}]
+indent_size = 2
+
+[*.rc]
+end_of_line = crlf
+indent_size = 2
+
+[*.rcinc]
+end_of_line = crlf
+indent_size = 2
+
+[*.ps1]
+end_of_line = crlf
+indent_size = 4
+
+[*.md]
+trim_trailing_whitespace = false

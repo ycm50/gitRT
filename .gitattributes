@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# 行尾与二进制：这里是把行尾"从每台机器的本地配置变成仓库规则"的唯一地方
+#
+# 为什么必须有它：仓库原先没有任何 attributes，行尾完全由各机 core.autocrlf 决定
+# （实测：索引里 130 个文本文件是 LF，工作区却是 CRLF）。后果有两个：
+#   1) 不同 autocrlf 配置的人一碰文件，整篇行尾翻转，diff 全是噪声；
+#   2) MSYS2 / windres 工具链对行尾敏感 —— setup-msys2 官方文档专门有一节
+#      "Known Problems: actions/checkout and line endings" 警告过这件事。
+#
+# 规则（gitattributes 是"最后匹配者生效"，所以具体规则必须写在 `* text=auto` 之后）
+# ---------------------------------------------------------------------------
+
+# 未列出的按文本处理：入库统一 LF
+* text=auto
+
+# 源码 / 构建 / 文档：索引与工作区都 LF，跨机不再翻转
+*.c               text eol=lf
+*.cc              text eol=lf
+*.cpp             text eol=lf
+*.h               text eol=lf
+*.hpp             text eol=lf
+*.cmake           text eol=lf
+CMakeLists.txt    text eol=lf
+CMakePresets.json text eol=lf
+*.in              text eol=lf
+*.def             text eol=lf
+*.manifest        text eol=lf
+*.md              text eol=lf
+*.json            text eol=lf
+*.yml             text eol=lf
+*.yaml            text eol=lf
+*.txt             text eol=lf
+*.py              text eol=lf
+LICENSE           text eol=lf
+.gitattributes    text eol=lf
+.gitignore        text eol=lf
+.editorconfig     text eol=lf
+
+# PowerShell 与资源脚本：保持 CRLF（与现存工作区一致，Windows 侧的常规形态）
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.rc    text eol=crlf
+*.rcinc text eol=crlf
+*.reg   text eol=crlf
+
+# 二进制：一律不转换、不在 diff 里展开
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.exe   binary
+*.dll   binary
+*.msix  binary
+*.appx  binary
+*.zip   binary
+*.pfx   binary
+*.cer   binary
+*.key   binary
+*.pem   binary

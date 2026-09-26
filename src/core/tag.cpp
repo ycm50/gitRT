@@ -12,15 +12,6 @@ namespace grt {
 
 namespace {
 
-std::wstring RunOut(const std::wstring& gitExe, const std::wstring& repoRoot,
-                    const std::vector<std::wstring>& argv, int* exitCode = nullptr,
-                    std::wstring* errOut = nullptr) {
-    const RunResult r = RunGitSync(gitExe, argv, repoRoot, 30000);
-    if (exitCode) *exitCode = r.exitCode;
-    if (errOut) *errOut = Trim(W(r.err));
-    return W(r.out);
-}
-
 std::vector<std::wstring> SplitLines(const std::wstring& s) {
     std::vector<std::wstring> out;
     std::wstring cur;
@@ -77,7 +68,7 @@ std::wstring PickRemoteName(const std::wstring& remote) {
 bool TagExistsLocally(const std::wstring& gitExe, const std::wstring& repoRoot,
                       const std::wstring& name) {
     int rc = 0;
-    RunOut(gitExe, repoRoot, {L"rev-parse", L"--verify", L"--quiet", L"refs/tags/" + name}, &rc);
+    RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--verify", L"--quiet", L"refs/tags/" + name}, &rc);
     return rc == 0;
 }
 
@@ -85,7 +76,7 @@ bool TagExistsLocally(const std::wstring& gitExe, const std::wstring& repoRoot,
 bool ResolveCommit(const std::wstring& gitExe, const std::wstring& repoRoot, const std::wstring& rev,
                    std::wstring* hash, std::wstring* error) {
     int rc = 0;
-    const std::wstring full = Trim(RunOut(gitExe, repoRoot,
+    const std::wstring full = Trim(RunGitOut(gitExe, repoRoot,
                                           {L"rev-parse", L"--verify", L"--quiet",
                                            rev + L"^{commit}"},
                                           &rc));
@@ -111,7 +102,7 @@ bool LoadTags(const std::wstring& gitExe, const std::wstring& repoRoot, std::vec
     }
 
     // ★ 分隔符 = %09(Tab)：format 不支持 %x1f。subject 里可能再有 Tab，见下面的拼回。
-    const std::wstring txt = RunOut(
+    const std::wstring txt = RunGitOut(
         gitExe, repoRoot,
         {L"for-each-ref", L"--sort=-creatordate",
          L"--format=%(refname:short)%09%(objecttype)%09%(objectname)%09%(objectname:short)"
@@ -140,7 +131,7 @@ bool LoadTags(const std::wstring& gitExe, const std::wstring& repoRoot, std::vec
     const std::wstring remote = PickRemoteName(remoteName);
     if (remote != L"-" && !remote.empty()) {
         int rc = 0;
-        const std::wstring ls = RunOut(gitExe, repoRoot, {L"ls-remote", L"--tags", remote}, &rc);
+        const std::wstring ls = RunGitOut(gitExe, repoRoot, {L"ls-remote", L"--tags", remote}, &rc);
         if (rc == 0) {
             std::set<std::wstring> remoteNames;
             for (const auto& line : SplitLines(ls)) {
@@ -206,7 +197,7 @@ TagPlan BuildTagPlan(const std::wstring& gitExe, const std::wstring& repoRoot,
     {
         int rc = 0;
         std::wstring err;
-        RunOut(gitExe, repoRoot, {L"check-ref-format", L"refs/tags/" + plan.name}, &rc, &err);
+        RunGitOut(gitExe, repoRoot, {L"check-ref-format", L"refs/tags/" + plan.name}, &rc, &err);
         if (rc != 0) {
             plan.error = L"标签名不合法：" + plan.name +
                          L"（不能有空格 / ~ ^ : ? * [ \\ / 开头结尾的斜杠或点，也不能以 - 开头）";
@@ -282,7 +273,7 @@ TagPlan BuildPushTagPlan(const std::wstring& gitExe, const std::wstring& repoRoo
     // 远端必须存在（否则 git push 会给出难懂的报错）
     {
         int rc = 0;
-        RunOut(gitExe, repoRoot, {L"remote", L"get-url", r}, &rc);
+        RunGitOut(gitExe, repoRoot, {L"remote", L"get-url", r}, &rc);
         if (rc != 0) {
             plan.error = L"没有这个远端：" + r + L"（先在「远端分支与地址…」里加一个）";
             return plan;
@@ -304,7 +295,7 @@ TagPlan BuildPushTagPlan(const std::wstring& gitExe, const std::wstring& repoRoo
         plan.error = L"本地没有这个标签：" + plan.name;
         return plan;
     }
-    plan.target = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--verify", L"--quiet",
+    plan.target = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--verify", L"--quiet",
                                                  L"refs/tags/" + plan.name}));
     AddCommand(&plan, {L"push", r, plan.name});
     plan.ok = true;
@@ -331,7 +322,7 @@ TagPlan BuildDeleteTagPlan(const std::wstring& gitExe, const std::wstring& repoR
         plan.error = L"本地没有这个标签：" + plan.name;
         return plan;
     }
-    plan.target = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--verify", L"--quiet",
+    plan.target = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--verify", L"--quiet",
                                                  L"refs/tags/" + plan.name}));
 
     plan.commandLines.push_back(QuoteCmdArgs({L"tag", L"-d", plan.name}));
@@ -345,7 +336,7 @@ TagPlan BuildDeleteTagPlan(const std::wstring& gitExe, const std::wstring& repoR
             return plan;
         }
         int rc = 0;
-        RunOut(gitExe, repoRoot, {L"remote", L"get-url", r}, &rc);
+        RunGitOut(gitExe, repoRoot, {L"remote", L"get-url", r}, &rc);
         if (rc != 0) {
             plan.error = L"没有这个远端：" + r;
             return plan;

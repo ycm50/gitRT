@@ -10,15 +10,6 @@ namespace grt {
 
 namespace {
 
-std::wstring RunOut(const std::wstring& gitExe, const std::wstring& repoRoot,
-                    const std::vector<std::wstring>& argv, int* exitCode = nullptr,
-                    std::wstring* errOut = nullptr) {
-    const RunResult r = RunGitSync(gitExe, argv, repoRoot, 30000);
-    if (exitCode) *exitCode = r.exitCode;
-    if (errOut) *errOut = Trim(W(r.err));
-    return W(r.out);
-}
-
 bool IsHexHash(std::wstring_view s) {
     if (s.size() < 4 || s.size() > 40) return false;
     for (const wchar_t c : s) {
@@ -31,7 +22,7 @@ bool IsHexHash(std::wstring_view s) {
 // 未完成的 rebase / merge / cherry-pick：任何还原动作都别叠在这些状态上
 std::wstring PendingOperation(const std::wstring& gitExe, const std::wstring& repoRoot) {
     int rc = 0;
-    const std::wstring gitDir = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--absolute-git-dir"}, &rc));
+    const std::wstring gitDir = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--absolute-git-dir"}, &rc));
     if (rc != 0 || gitDir.empty()) return {};
     for (const wchar_t* name : {L"rebase-merge", L"rebase-apply", L"MERGE_HEAD", L"CHERRY_PICK_HEAD",
                                 L"REVERT_HEAD"}) {
@@ -103,7 +94,7 @@ RestorePlan BuildRestorePlan(const std::wstring& gitExe, const std::wstring& rep
     // 基本仓库信息
     int rc = 0;
     std::wstring err;
-    plan.branch = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--abbrev-ref", L"HEAD"}, &rc, &err));
+    plan.branch = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--abbrev-ref", L"HEAD"}, &rc, &err));
     if (rc != 0) {
         plan.error = err.empty() ? L"不是 git 仓库，或仓库里还没有提交" : err;
         return plan;
@@ -116,7 +107,7 @@ RestorePlan BuildRestorePlan(const std::wstring& gitExe, const std::wstring& rep
     }
 
     // 目标提交必须真实存在且是提交对象
-    const std::wstring full = Trim(RunOut(gitExe, repoRoot,
+    const std::wstring full = Trim(RunGitOut(gitExe, repoRoot,
                                           {L"rev-parse", L"--verify", L"--quiet", want + L"^{commit}"},
                                           &rc));
     if (rc != 0 || full.empty()) {
@@ -124,12 +115,12 @@ RestorePlan BuildRestorePlan(const std::wstring& gitExe, const std::wstring& rep
         return plan;
     }
     plan.hash = full;
-    plan.shortHash = Trim(RunOut(gitExe, repoRoot, {L"rev-parse", L"--short", full}));
-    plan.subject = Trim(RunOut(gitExe, repoRoot, {L"log", L"-1", L"--format=%s", full}));
+    plan.shortHash = RevParseShort(gitExe, repoRoot, full);
+    plan.subject = Trim(RunGitOut(gitExe, repoRoot, {L"log", L"-1", L"--format=%s", full}));
 
     // 上游（用于"被丢掉的提交是否已经推送过"的提示）
     int upRc = 0;
-    plan.upstream = Trim(RunOut(gitExe, repoRoot,
+    plan.upstream = Trim(RunGitOut(gitExe, repoRoot,
                                 {L"rev-parse", L"--abbrev-ref", L"--symbolic-full-name", L"@{upstream}"},
                                 &upRc));
     plan.hasUpstream = (upRc == 0 && !plan.upstream.empty());
@@ -137,13 +128,13 @@ RestorePlan BuildRestorePlan(const std::wstring& gitExe, const std::wstring& rep
     // 工作区是否脏（有未提交改动）
     {
         int dRc = 0;
-        const std::wstring st = Trim(RunOut(gitExe, repoRoot, {L"status", L"--porcelain"}, &dRc));
+        const std::wstring st = Trim(RunGitOut(gitExe, repoRoot, {L"status", L"--porcelain"}, &dRc));
         plan.dirty = (dRc == 0 && !st.empty());
     }
 
     // 会被"删掉"的后续提交（仅重置模式有意义）
     if (plan.isReset()) {
-        const std::wstring list = RunOut(gitExe, repoRoot,
+        const std::wstring list = RunGitOut(gitExe, repoRoot,
                                          {L"rev-list", full + L"..HEAD"});
         size_t n = 0;
         for (const wchar_t c : list) {
@@ -152,7 +143,7 @@ RestorePlan BuildRestorePlan(const std::wstring& gitExe, const std::wstring& rep
         if (!list.empty() && list.back() != L'\n') ++n;
         plan.dropCount = n;
         if (plan.hasUpstream && plan.dropCount > 0) {
-            const std::wstring pushed = RunOut(gitExe, repoRoot,
+            const std::wstring pushed = RunGitOut(gitExe, repoRoot,
                                                {L"rev-list", full + L"..HEAD", L"--not", plan.upstream});
             size_t np = 0;
             for (const wchar_t c : pushed) {
@@ -181,7 +172,7 @@ RestorePlan BuildRestorePlan(const std::wstring& gitExe, const std::wstring& rep
                 return plan;
             }
             int eRc = 0;
-            RunOut(gitExe, repoRoot, {L"rev-parse", L"--verify", L"--quiet",
+            RunGitOut(gitExe, repoRoot, {L"rev-parse", L"--verify", L"--quiet",
                                       L"refs/heads/" + plan.newBranchName}, &eRc);
             if (eRc == 0) {
                 plan.error = L"分支已存在：" + plan.newBranchName;

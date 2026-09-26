@@ -44,6 +44,7 @@ enum : int {
     IDC_SET_AUTOFETCH = 1040,   // 自动抓取间隔（分钟，0=关）
     IDC_SET_LBL_AUTOFETCH = 1041,
     IDC_SET_AUTOFETCH_HINT_ID = 1042,
+    IDC_SET_PROTECT = 1050,     // 「用 Windows 加密保存 Key（DPAPI）」
     IDC_SET_GETMODELS = 1020,   // 「获取模型列表」
 };
 
@@ -61,6 +62,7 @@ struct SetState {
     HWND getModelsBtn = nullptr;
     HWND sysPrompt = nullptr, sysPromptHint = nullptr, resetPromptBtn = nullptr;
     HWND autoFetch = nullptr, autoFetchHint = nullptr;   // 自动抓取间隔（分钟）
+    HWND protectKey = nullptr;   // 「用 Windows 加密保存 Key（DPAPI）」
     HWND notify = nullptr;     // 配置变化通知目标（AI 窗口）
     bool testing = false;
     bool fetchingModels = false;
@@ -74,6 +76,8 @@ void FillFields(SetState* st) {
     SetText(st->model, st->cfg.model);   // 下拉框：既可选，也允许直接手输
     SetText(st->key, st->cfg.apiKey);   // 明文显示：用户选的就是"看得见"
     SetText(st->timeout, std::to_wstring(st->cfg.timeoutMs));
+    ::SendMessageW(st->protectKey, BM_SETCHECK,
+                   st->cfg.protectKey ? BST_CHECKED : BST_UNCHECKED, 0);
     SetText(st->storeLabel, st->cfg.keyFilePath);
     SetTextMl(st->sysPrompt, st->cfg.systemPrompt);   // 多行：系统提示词
     SetText(st->autoFetch, std::to_wstring(ConfigStore::Instance().GetInt("autoFetchMinutes", 0)));
@@ -111,7 +115,9 @@ void StartModelFetch(HWND hwnd, SetState* st) {
     if (st->worker.joinable()) st->worker.join();
     st->worker = std::thread([hwnd, cfg] {
         auto* res = new ModelListResult(FetchModelList(cfg));
-        ::PostMessageW(hwnd, WM_GRT_AI_MODELS_DONE, 0, reinterpret_cast<LPARAM>(res));
+        // 窗口已销毁时 PostMessageW 失败 → 自己回收，避免泄漏
+        if (!::PostMessageW(hwnd, WM_GRT_AI_MODELS_DONE, 0, reinterpret_cast<LPARAM>(res)))
+            delete res;
     });
 }
 
@@ -127,6 +133,8 @@ std::wstring KeySourceText(const AiConfig& cfg) {
 void RefreshStatus(SetState* st, const std::wstring& extra = {}) {
     std::wstring s = KeySourceText(st->cfg);
     if (!st->cfg.keyFileUsable) s += L"   " + Str(IDS_MSG_AI_STORE_READONLY);
+    // 明文过网（http + 非本机）：常驻提醒（保存/测试时另有一次确认框）
+    if (IsInsecureRemoteEndpoint(st->cfg.endpoint)) s += L"   ⚠ 明文 HTTP 且非本机，Key 会明文过网";
     if (!extra.empty()) s = extra + L"   " + s;
     SetText(st->status, s);
 }
@@ -136,6 +144,7 @@ void ReadFields(SetState* st) {
     st->cfg.endpoint = Trim(GetText(st->endpoint));
     st->cfg.model = Trim(GetText(st->model));
     st->cfg.apiKey = Trim(GetText(st->key));
+    st->cfg.protectKey = ::SendMessageW(st->protectKey, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const std::wstring t = Trim(GetText(st->timeout));
     const int ms = t.empty() ? 60000 : _wtoi(t.c_str());
     st->cfg.timeoutMs = static_cast<uint32_t>((ms < 5000 || ms > 600000) ? 60000 : ms);
@@ -151,15 +160,32 @@ void ReadFields(SetState* st) {
     }
 }
 
+// 明文过网提醒：http:// 且非本机时，Key 与提示词都会明文经过网络。
+// 只在"真的会把 Key 送出去"时弹一次确认（没有 Key 就只在状态栏提示，不打扰）；
+// 默认按钮是"取消"，避免顺手回车就把 Key 发出去。
+bool ConfirmInsecureRemote(HWND hwnd, const AiConfig& cfg) {
+    if (!IsInsecureRemoteEndpoint(cfg.endpoint)) return true;
+    if (ResolveApiKey(cfg).empty()) return true;
+    const std::wstring msg =
+        L"当前接口地址是明文 HTTP，且不是本机：\n\n  " + cfg.endpoint +
+        L"\n\n这种情况下 API Key 与提示词（含仓库路径、分支名、文件名）都会**明文经过网络**。\n"
+        L"建议改成 https://，或改用本机服务（http://127.0.0.1:<端口>/v1/chat/completions）。\n\n"
+        L"仍要继续吗？";
+    return ::MessageBoxW(hwnd, msg.c_str(), L"GitRT · 明文 HTTP 提醒",
+                         MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) == IDOK;
+}
+
 // 测试连接：最小请求（max_tokens=1），只看 HTTP 是否通、Key 是否被接受
 void TestConnection(SetState* st, HWND hwnd) {
     if (st->testing) return;
     ReadFields(st);
     const std::wstring key = ResolveApiKey(st->cfg);
-    if (key.empty()) {
+    // 本机服务（Ollama / LM Studio…）通常不鉴权：Key 为空照样测
+    if (key.empty() && !IsLoopbackEndpoint(st->cfg.endpoint)) {
         SetText(st->status, Str(IDS_MSG_AI_KEY_NONE2));
         return;
     }
+    if (!ConfirmInsecureRemote(hwnd, st->cfg)) return;
     st->testing = true;
     ::EnableWindow(st->testBtn, FALSE);
     SetText(st->status, Str(IDS_MSG_AI_TESTING));
@@ -171,19 +197,20 @@ void TestConnection(SetState* st, HWND hwnd) {
         const std::string body =
             "{\"model\":\"" + JsonEscape(WideToUtf8(cfg.model)) +
             "\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}";
-        const std::vector<std::pair<std::wstring, std::wstring>> headers = {
+        std::vector<std::pair<std::wstring, std::wstring>> headers = {
             {L"Content-Type", L"application/json"},
-            {L"Authorization", L"Bearer " + key},
         };
+        if (!key.empty()) headers.push_back({L"Authorization", L"Bearer " + key});
         const auto a = std::make_unique<HttpResponse>(HttpPostJson(url, headers, body, timeout));
         const auto started = a->status;   // 结果整体回传（status/body/error）
         auto* payload = new std::pair<int, std::string>{started, a->error.empty() ? a->body : a->error};
-        ::PostMessageW(hwnd, WM_GRT_AI_TEST_DONE, 0, reinterpret_cast<LPARAM>(payload));
+        if (!::PostMessageW(hwnd, WM_GRT_AI_TEST_DONE, 0, reinterpret_cast<LPARAM>(payload))) delete payload;
     });
 }
 
-void SaveFromUi(SetState* st) {
+void SaveFromUi(SetState* st, HWND hwnd) {
     ReadFields(st);
+    if (!ConfirmInsecureRemote(hwnd, st->cfg)) return;   // 高危组合：取消就不落盘
     st->cfg.keyFilePath = AiKeyFilePath();
     const bool ok = SaveAiConfig(st->cfg);
     st->cfg.keyFileUsable = ok || st->cfg.keyFileUsable;
@@ -240,6 +267,10 @@ LRESULT CALLBACK SetProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             st->timeout = MakeChild(hwnd, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                                           ES_NUMBER | ES_AUTOHSCROLL,
                                     WS_EX_CLIENTEDGE, IDC_SET_TIMEOUT, Th().fontUi);
+            // 可选：把 Key 用 DPAPI 按当前用户加密后落盘（默认不勾 = 保持明文，方便查看/修改）
+            st->protectKey = MakeChild(hwnd, WC_BUTTONW, Str(IDS_AI_SET_PROTECT_KEY),
+                                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0,
+                                       IDC_SET_PROTECT, Th().fontUi);
             // ---- 系统提示词（"首选项应该能够设置系统提示词"）----
             label(IDS_AI_SET_LABEL_SYSPROMPT, IDC_SET_LBL_SYSPROMPT, 0);
             st->sysPrompt = MakeChild(hwnd, WC_EDITW, L"",
@@ -307,6 +338,8 @@ LRESULT CALLBACK SetProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             row(::GetDlgItem(hwnd, IDC_SET_LBL_KEY), st->key);
             ::MoveWindow(::GetDlgItem(hwnd, IDC_SET_LBL_TIMEOUT), pad, y, Scale(200), lh, TRUE);
             ::MoveWindow(st->timeout, pad, y + lh + Scale(2), Scale(200), eh, TRUE);
+            // 「用 Windows 加密」与超时同排的右侧（省一行高度，窗口高度不必改）
+            ::MoveWindow(st->protectKey, pad + Scale(220), y + lh + Scale(4), w - Scale(220), lh + Scale(4), TRUE);
             y += lh + Scale(2) + eh + gap + Scale(4);
             // 系统提示词：标签 + 多行框 + 「恢复默认」按钮 + 默认提示说明
             ::MoveWindow(::GetDlgItem(hwnd, IDC_SET_LBL_SYSPROMPT), pad, y, w - Scale(130), lh, TRUE);
@@ -388,7 +421,7 @@ LRESULT CALLBACK SetProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     SetFocus(st->sysPrompt);
                     return 0;
                 case IDC_SET_SAVE:
-                    SaveFromUi(st);
+                    SaveFromUi(st, hwnd);
                     return 0;
                 case IDC_SET_TEST:
                     TestConnection(st, hwnd);

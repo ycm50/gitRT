@@ -36,13 +36,14 @@
 | **面板自动显示 / 就地输出** | 查看类命令（提交历史/查看差异/文件历史）选中即显示内容并每 2.5s **自动刷新**；执行类命令的结果**就地**显示在「将执行的命令」下面的「运行结果」框里（不再另开进度窗口），运行中按钮变「取消」，结束必刷状态 |
 | **克隆选项** | 「克隆到此处…」支持**深度（浅克隆）/单分支/指定分支/不拉标签/部分克隆（`--filter`）/递归子模块**；值型输入在构造期就校验（比如深度必须是正整数），不留到 git 报错 |
 | **合并提交（squash）** | 在「合并提交」窗口里**复选连续的提交** → 合并成一条：改动 = 所有选中提交改动之和，提交信息 = 各 subject 自动拼接（可编辑）；带确认框与真实命令行日志；脚本里可用 `--squash` |
-| **32 条命令**（含首选项/自检/AI 助手等内部命令） | 初始化 / 克隆 / 暂存 / 撤销 / 提交 / amend / 拉取 / 推送 / 抓取 / 同步 / 分支切换·新建·合并·变基·删除 / 历史 / 差异 / 文件历史 / 状态面板 / 储藏 / 清理 / 重置 / 维护 / 首选项 / 自检 / AI 助手 …… |
+| **标签 / 发布窗口** | 「标签列表」和「发布列表」以及打标签 / 推送 / 删除标签 / 创建发布，都在**同一个专用窗口**里：列表（标签：名称/哈希/类型/日期/主题/**是否已推送到远端**；发布：tag/名称/时间/草稿·预发布）+ **选中一行自动填进表单** + 命令预览 + 真实日志。发布走 GitHub CLI（`gh`），没装/未登录时给中文原因，不影响其它功能 |
+| **41 条命令**（含首选项/自检/AI 助手等内部命令） | 初始化 / 克隆 / 暂存 / 撤销 / 提交 / amend / 拉取 / 推送 / 抓取 / 同步 / 分支切换·新建·合并·变基·删除 / 历史 / 差异 / 文件历史 / 状态面板 / 储藏 / 清理 / 重置 / 维护 / 标签列表·打标签·推送标签·删除标签 / 发布列表·创建发布 / 首选项 / 自检 / AI 助手 …… |
 | **参数面板** | 每条命令的选项、参数、**即将执行的完整命令行实时预览**；危险操作需二次确认 |
 | **执行反馈** | 点「执行」**立即**弹出执行窗口：标题与日志首行是**真实命令行**、输出实时流式回传、结束保留窗口（`Esc`/关闭）；结束后自动**重读 `git status`** 刷新状态面板与底部状态栏 |
 | **状态面板 / 文本窗口** | 文件状态一览（暂存/未暂存/未跟踪）、差异、提交历史、自检报告，可复制 |
 | **AI 助手** | 自然语言 → 结构化计划 → **白名单校验** → 参数面板 → 执行；只发路径/分支名/文件名，不发文件内容；`Internal` 命令禁止 AI 执行 |
 | **AI 设置（首选项）** | 接口地址 / 模型（**从接口拉取列表后下拉选择**，也可手输）/ API Key / 超时 + **测试连接**；Key 明文存 exe 同目录 `GitRT.ai.json`（也可只用环境变量） |
-| **CLI 门面（远端/还原）** | `--remote-info [--remote-fetch]` / `--set-upstream <up>` / `--remote-add name=url` / `--remote-set-url name=url` / `--remote-remove <name>` / `--restore <hash> --mode detach|branch|soft|mixed|hard [--branch <n>] [--force] [--dry-run]` |
+| **CLI 门面（远端/还原）** | `--remote-info [--remote-fetch]` / `--set-upstream <up>` / `--remote-add name=url` / `--remote-set-url name=url` / `--remote-remove <name>` / `--restore <hash> --mode detach\|branch\|soft\|mixed\|hard [--branch <n>] [--force] [--dry-run]` |
 | **CLI 门面（标签/发布）** | `--tag-list` / `--tag-create <name> [--annotated] [--message <m>] [--target <rev>] [--force] [--dry-run]` / `--tag-push <name> [--all] [--remote <r>]` / `--tag-delete <name> [--remote] [--force] [--dry-run]` / `--release-list` / `--release-create <tag> [--title <t>] [--notes <n>] [--generate-notes] [--draft] [--prerelease] [--push-tag] [--asset <file>]… [--dry-run]` |
 | **CLI 门面** | `--run`（默认真执行，`--dry-run` 只预览）/ `--list-commands` / `--out` / `--cwd` / `--ai` / **`--squash <hashes>`**（合并连续提交，可脚本化）（脚本化、CI 可复现） |
 | **右键菜单形态可切换** | 默认 `menu.mode=app`（只一个入口）；`"menu.mode": "tree"` 可回到分层菜单（8 分组 + 可选直达项/内联开关） |
@@ -141,7 +142,7 @@ pwsh -File packaging\scripts\dev-uninstall.ps1
 | `GitRT.Shell.dll` | `build/<cfg>/src/shell/` | 右键菜单扩展 `IExplorerCommand`（构建期强制校验导出表 + 无运行时 DLL 依赖） |
 | `GitRT.ShellProbe.exe` | `build/<cfg>/src/shellprobe/` | 「无资源管理器」验证工具（`--dump` / `--self-test` / `--invoke` / `--shell-menu`） |
 
-构建期选项：`GRT_DEV_REGISTER`（Debug 默认 ON / Release 默认 OFF）、`GRT_SHELL_PROBE`（菜单探针日志）、`GRT_BUILD_TOOLS`、`GRT_WERROR`。
+构建期选项：`GRT_DEV_REGISTER`（Debug 默认 ON / Release 默认 OFF）、`GRT_SHELL_PROBE`（菜单探针日志）、`GRT_BUILD_TOOLS`、`GRT_BUILD_TESTS`（构建无窗口的核心单元测试并注册进 CTest）、`GRT_WERROR`（把编译告警当错误；**本地默认 OFF**，**CI 固定 ON 当门禁**）、`GRT_ANALYZER`（`g++ -fanalyzer` 静态分析，慢，CI 有独立 job）。
 
 手工启动（不注册菜单也能用）：
 
@@ -154,7 +155,7 @@ build\release\src\gui\GitRT.exe "D:\some\repo"          # 打开主窗口并切�
 ## AI 助手配置
 
 1. 打开 GitRT → 工具栏 **「首选项」**（或 AI 助手窗口里的 **「AI 设置」**）
-2. 填 **API Key**；接口地址/模型默认指向 DeepSeek 官方，换服务就改
+2. 填 **API Key**；接口地址/模型默认指向 DeepSeek 官方，换服务就改（**本机服务可以不填 Key**，见下）
 3. 点 **「测试连接」**（应显示 `连接正常 (HTTP 200)`，并**自动拉取模型列表**）→ 模型下拉选一个 → **「保存」**
 
 存到哪里 / 优先级（`ai_client.h` 顶部有完整说明）：
@@ -163,19 +164,24 @@ build\release\src\gui\GitRT.exe "D:\some\repo"          # 打开主窗口并切�
 // %LOCALAPPDATA%\Programs\GitRT\GitRT.ai.json   ← exe 同目录，明文
 { "endpoint": "https://api.deepseek.com/chat/completions",
   "model": "deepseek-chat",
-  "apiKey": "sk-…",                 // 明文；界面里也能直接看到、直接改
+  "apiKey": "sk-…",                 // 明文；界面里也能直接看到、直接改（勾了加密则是 "dpapi:<base64>"）
+  "protectKey": false,              // true = 用 Windows DPAPI 按当前用户加密保存 apiKey
   "apiKeyEnv": "DEEPSEEK_API_KEY",  // apiKey 留空时改从该环境变量读
   "timeoutMs": 60000 }
 ```
 
 - 优先级：`GITRT_AI_*` 环境变量 > `GitRT.ai.json` > `config.json` 的 `ai*` 键 > 内置默认
+- 🏠 **本机服务免 Key**：接口地址写成 `http://127.0.0.1:<端口>/v1/chat/completions`（或 `localhost` / `[::1]`）时，**Key 留空也能用** —— Ollama / LM Studio / vLLM / llama.cpp server 这类本地服务通常不鉴权。此时请求不带 `Authorization` 头；界面会显示"未设置（本机服务免 Key）"而不是报错。非本机的地址仍然要求 Key（避免把无 Key 请求误发到公网）。
+- ⚠️ **明文 HTTP 会提醒**：如果接口地址是 `http://` 且**不是本机**，Key 与提示词（含仓库路径/分支/文件名）会明文过网 —— 设置窗口保存/测试时会弹一次确认（默认按钮是"取消"），AI 窗口的配置行也会常驻提醒。`https://` 与 `http://本机` 不打扰。
 - 模型列表：`GET <endpoint 的 base>/models`（`/chat/completions` 自动换成 `/models`），下拉框同时允许手输
 - ⚠️ **明文落盘的代价**：任何能读该目录的进程都能读到 Key（界面里也这么写）。不想落盘就把 `apiKey` 留空、只设环境变量 `DEEPSEEK_API_KEY`。该文件已在 `.gitignore` 里
+- 🔒 **可选加密**：首选项里勾「用 Windows 加密保存 Key（DPAPI）」后，文件里存的是 `"apiKey": "dpapi:<base64>"` —— 用 `CryptProtectData` 按**当前用户**加密，换用户/换机器解不开（会提示重新填写，**不会**清掉文件）。默认**不勾**，保持"明文、随时可查看与修改"。勾了但加密失败时宁可不写 Key 并报"保存失败"，也不会回退成明文
 - 🔐 **卸载不会弄丢它**：`uninstall.ps1` 先把 `GitRT.ai.json` 备份到 `%APPDATA%\GitRT\uninstall-backup-<时间戳>\`，重装时 `install.ps1` 自动恢复（不想留备份用 `-NoBackup` / `-NoRestoreBackup`）
 - 只想先试一遍、不花 Key：
 
 ```powershell
-pwsh -File tools\mock-ai-server.ps1 -Port 18080   # 本地 OpenAI 兼容假模型
+pwsh -File tools\mock-ai-server.ps1 -Port 18080   # 本地 OpenAI 兼容假模型（不带 Authorization 会返回 401）
+pwsh -File tools\mock-ai-server.ps1 -Port 18080 -AllowNoAuth   # 模拟"不需要鉴权的本机服务"（Ollama 那种），可验证免 Key 路径
 pwsh -File tools\demo-ai-gui.ps1                  # 自动跑完 AI 全流程并截图
 ```
 
@@ -191,21 +197,26 @@ build\release\src\gui\GitRT.exe --ai "把当前改动提交" --cwd . --ai-run   
 ## 测试
 
 ```powershell
-# 1) GUI 内置自检（porcelain 固件 / 命令表 dry-run / 安全闸门 / AI 设置与优先级 / 执行后状态刷新 / 图标）
+# 1) 核心单元测试（**无窗口、不需要桌面会话**，毫秒级；37 项）
+#    覆盖：porcelain 固件 / 命令表 dry-run / flags 白名单与参数校验 / JSON 工具 /
+#          AI 响应解析与安全闸门 / AI 设置往返与 Key 优先级 / 克隆选项 / AI 只读白名单
+build\debug\src\tests\GitRT.CoreTests.exe
+
+# 2) GUI 内置自检（参数面板可构建 / 图标 / 换行 / 执行后状态刷新 / 远端·还原·标签的真实仓库用例）
 Start-Process build\debug\src\gui\GitRT.exe -ArgumentList "--self-test=$PWD\build\selftest-gui.txt" -Wait
 
-# 2) Shell 扩展自检（COM 接口 / 菜单树 / 复选开关 / 内嵌 msix 身份 / 性能预算）
+# 3) Shell 扩展自检（COM 接口 / 菜单树 / 复选开关 / 内嵌 msix 身份 / 性能预算）
 build\debug\src\shellprobe\GitRT.ShellProbe.exe --self-test=build\selftest-shell.txt `
   --dll build\debug\src\shell\GitRT.Shell.dll --identity packaging\identity.json `
   --appx build\debug\packaging\AppxManifest.xml --workdir build\debug
 
-# 3) 看一眼菜单树（在任意目录/文件上模拟右键）
+# 4) 看一眼菜单树（在任意目录/文件上模拟右键）
 build\debug\src\shellprobe\GitRT.ShellProbe.exe --dump $PWD --dll build\debug\src\shell\GitRT.Shell.dll
 
-# 4) CTest（两个配置都跑）
+# 5) CTest（三个用例：core_selftest / gui_selftest / shell_selftest；两个配置都跑）
 ctest --test-dir build/debug --output-on-failure
 
-# 5) 全量端到端（A–D 四个阶段：命令表 dry-run + 真实 git 断言 + AI 链路 + Shell 端到端）
+# 6) 全量端到端（A–D 四个阶段：命令表 dry-run + 真实 git 断言 + AI 链路 + Shell 端到端）
 #    注意：Exe 要放在工作区**外**，脚本默认用 %TEMP%\GitRT-run\（沙箱/权限原因）
 Copy-Item build\debug\src\gui\GitRT.exe, build\debug\src\shell\GitRT.Shell.dll, `
           build\debug\src\shellprobe\GitRT.ShellProbe.exe "$env:TEMP\GitRT-run\" -Force
@@ -262,14 +273,19 @@ pwsh -File packaging\scripts\build-msix.ps1 -LayoutOnly     # 只组装稀疏包
 
 | 阶段 | 内容 |
 | --- | --- |
-| `build`（Debug + Release 矩阵） | MSYS2 UCRT64 工具链 → 配置/构建 → `ctest` → **GUI 自检**（命令表 / 安全闸门 / AI 设置 / 执行后状态刷新 / 图标）→ **Shell 自检 + 菜单 dump** → 上传产物 |
-| `package` | 构建 Release → `build-release.ps1` 组装发布包（`app\` + `package\` + 安装脚本 + zip）→ 上传 zip |
+| `build`（Debug + Release 矩阵） | MSYS2 UCRT64 工具链 → 配置/构建（**`-DGRT_WERROR=ON`**）→ `ctest`（3 个用例）→ **GUI 自检** → **Shell 自检 + 菜单 dump** → 功能套件（**只在 Release 那一路**跑：纯 CLI 行为，与构建类型无关）→ 上传产物 |
+| `analysis` | **静态分析**：`g++ -fanalyzer` + `-Werror`（零第三方依赖；findings 即失败，日志作为 artifact 上传）。job 里注明了 GCC 16 分析器在本代码库上的**两类已知假阳性**及追踪原文，去掉那个 `-DCMAKE_CXX_FLAGS…` 就能看到原始提示 |
+| `package` | **复用 build job 的 Release 产物**（`download-artifact` → `packaging/scripts/stage-artifacts.ps1` 归位），**不再重装 MSYS2、不再重建** → `build-release.ps1` 组装发布包（`app\` + `package\` + 安装脚本 + zip）→ 安装/卸载端到端 → 上传 zip |
 | `release`（打 `v*` tag 时） | 下载 zip → `gh release create` 建 GitHub Release 并附上发布包 |
 
-两个容易踩的点，workflow 里都处理了：
+几个容易踩的点，workflow 里都处理了：
 
 - **objdump 必须在 PATH 上**：根 `CMakeLists.txt` 用 `find_program(objdump)` 做 Shell DLL 导出表校验，找不到只会**告警并跳过**；CI 里显式把 `ucrt64/bin` 加进 `GITHUB_PATH`，并断言 CMakeCache 里确实有 `GRT_OBJDUMP`。
 - **预设里的编译器路径写死本地开发机的 `A:/msys64`**：CI 用命令行 `-D` 覆盖成 runner 的 `C:/msys64`（命令行优先级高于 preset）。
+- **别在多个 job 里复制同一段脚本**：安装清单与「定位 UCRT64 工具链」那 60 行候选路径逻辑原先在 `build` / `package` 各一份、注释还写着"改一处要同步另一处"，现在都只在 [`.github/actions/setup-ucrt64`](.github/actions/setup-ucrt64/action.yml) 里（复合动作，`build` 与 `analysis` 共用）。
+- **package 不必重编译**：`build-msix.ps1 -LayoutOnly` 只要生成好的 `AppxManifest.xml` + 源码里的 `packaging/Assets/*`（不需要编译器、不需要 Windows SDK），而 build job 已经把二进制与清单传上去了；`stage-artifacts.ps1` 负责把 `download-artifact` 的落地层级归成打包脚本期望的 `build/release/...`。手动下载产物后想重打包，也可以用它。
+- **告警当门禁**：CI 两个配置都带 `-DGRT_WERROR=ON`；本地默认 OFF（方便边写边调），提交前建议自己开一次跑通。
+  版本号也只有一个来源（`packaging/identity.json`）——`GRT_VERSION`、exe/DLL 的 `FileVersion`、MSIX 清单全部由它派生，**改了它就会自动触发重新 configure**。
 
 > 需要"注册身份包 + 交互式桌面"的用例（`tools/test-all.ps1` 的 D 阶段、现代菜单聚合）**不在 CI 跑**，
 > 因为在 runner 上要开发者模式与真实桌面会话；它们在本地按下面的「界面级验证」执行。
@@ -282,8 +298,10 @@ src/core/        命令表、参数构造（argv 唯一来源）、git 执行引
 src/gui/         Win32 GUI：主窗口、参数面板、进度窗口、状态面板、文本窗口、AI 助手、AI 设置
 src/shell/       右键菜单扩展：IExplorerCommand / IEnumExplorerCommand / 菜单模型 / 选区
 src/shellprobe/  「无资源管理器」验证工具（--dump / --self-test / --invoke / --shell-menu）
+src/tests/       **无窗口**的核心单元测试（CTest 用例 core_selftest，只链 gitrt_core）
 cmake/           身份与 GUID 生成、Shell 导出表校验
-packaging/       稀疏身份包清单、Assets（图标）、dev-install / dev-reload / dev-uninstall / build-msix
+.github/         workflow + 复合动作（actions/find-ucrt64 供 build / package 共用）
+packaging/       稀疏身份包清单、Assets（图标）、install / uninstall / build-msix / build-release / stage-artifacts
 tools/           端到端与界面验证脚本、mock AI 服务、注册辅助
 docs/            产品设计 / 技术实现设计 / 支持矩阵 / 调研材料 / 截图
 ```
@@ -311,7 +329,7 @@ docs/            产品设计 / 技术实现设计 / 支持矩阵 / 调研材料
 见 [AI 助手配置](#ai-助手配置)：界面上填 Key 即可，或设置环境变量 `DEEPSEEK_API_KEY`（`setx` 后需重启资源管理器，从右键菜单启动的进程才会继承）。
 
 **`首选项` 里的 Key 安全吗**
-按产品决策**明文**保存在 `GitRT.ai.json`（方便查看/修改）。不想落盘就留空 `apiKey`、只用环境变量。凭据永不写日志，且该文件已被 `.gitignore` 忽略。
+按产品决策**明文**保存在 `GitRT.ai.json`（方便查看/修改）。不想落盘就留空 `apiKey`、只用环境变量；想落盘又不想是明文，就勾上「**用 Windows 加密保存 Key（DPAPI）**」——按当前用户加密，换机/换用户需重填（文件不会被清掉，只提示重填）。凭据永不写日志，且该文件已被 `.gitignore` 忽略。
 
 **只想用命令行**
 `GitRT.exe --list-commands` 列全部命令；`--run <key> --cwd <仓库> --dry-run` 只看 argv（**不加 `--dry-run` 就真执行**）；`--out <file>` 把输出写文件（见 [docs/技术实现设计.md](docs/技术实现设计.md) §14）。
@@ -334,7 +352,10 @@ docs/            产品设计 / 技术实现设计 / 支持矩阵 / 调研材料
 | [docs/产品设计.md](docs/产品设计.md) | 定位、平台约束（D1–D4）、命令清单、菜单语义、里程碑、风险、修订记录 |
 | [docs/技术实现设计.md](docs/技术实现设计.md) | 工程结构、COM 实现、wire format、Git 引擎、AI、打包、测试落点、**进度与偏差记录** |
 | [docs/支持矩阵.md](docs/支持矩阵.md) | M0 待实测项（S1–S6）结论、场景 × 菜单可见性矩阵 |
-| [research-git-context-menu-zh.md](research-git-context-menu-zh.md) | 调研材料（含逐条 URL 出处：菜单机制、git 后端、凭据、性能） |
+| [docs/research/git-context-menu-zh.md](docs/research/git-context-menu-zh.md) | 调研材料（含逐条 URL 出处：菜单机制、git 后端、凭据、性能） |
+| [CHANGELOG.md](CHANGELOG.md) | 更新记录（用户可感知的新增/修复/变更 + 升级提示） |
+| [SECURITY.md](SECURITY.md) | 安全策略与威胁模型（凭据处理、信任边界、审计位置） |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 参与开发（硬约束、提交前必跑的四件事、测试写在哪） |
 | [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) | 第三方声明 |
 
 许可证：MIT（见 [LICENSE](LICENSE)）。
