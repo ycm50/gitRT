@@ -7,6 +7,7 @@
 //   3. 危险命令/危险选项需要用户在模态框中显式确认；
 //   4. 绝不把 AI 输出当命令行去执行。
 #include "gui.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 
 #include "ai_client.h"
 
@@ -187,10 +188,11 @@ void StartGenerate(HWND hwnd, AiState* st) {
                                         << " prompt=" << U8(text) << " sysBytes=" << ctx->sys.size());
 
     st->worker = std::thread([ctx]() {
-        auto* done = new AiDone();
+        auto done = std::make_unique<AiDone>();
         done->plan = GeneratePlan(ctx->cfg, ctx->sys, ctx->user);
-        if (!::PostMessageW(ctx->hwnd, WM_GRT_AI_DONE, 0, reinterpret_cast<LPARAM>(done))) delete done;
-        delete ctx;
+        // 先接管再移交：ctx 无论投递成败都要在这里回收
+        std::unique_ptr<Ctx> ctxGuard(ctx);
+        PostOwned(ctx->hwnd, WM_GRT_AI_DONE, std::move(done));
     });
 }
 

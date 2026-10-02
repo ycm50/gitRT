@@ -66,6 +66,7 @@
   IDS_FLAG_SET_UPSTREAM      "设置上游 (--set-upstream)"
   IDS_FLAG_DRY_RUN           "演练，不实际执行 (--dry-run)"
   IDS_FLAG_FORCE_WITH_LEASE  "强制推送（安全版 --force-with-lease）【危险】"
+  IDS_FLAG_VALUE_HINT        "可留空；填 <引用名>[:<期望值>]，如 origin/main"
   IDS_FLAG_ALL               "所有远端 (--all)"
   IDS_FLAG_NO_FF             "禁用快进合并 (--no-ff)"
   IDS_FLAG_SQUASH            "压缩为一次提交 (--squash)"

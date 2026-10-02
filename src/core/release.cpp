@@ -114,6 +114,37 @@ bool JsonBool(const std::wstring& v) { return v == L"true" || v == L"1"; }
 GhInfo DetectGh() {
     GhInfo info;
 
+    // 0) 测试注入缝：GITRT_GH_EXE 指向一个"假 gh"（桩），让"gh 在场"的代码路径可测。
+    //    ★ 为什么必须是环境变量而不是往 PATH 前面塞一个 gh.cmd：
+    //      本函数的下游用 CreateProcessW 直接起进程，而 CreateProcessW **不能执行 .cmd**
+    //      （得用 cmd /c 包一层），并且还依赖 PATH 顺序与 PATHEXT —— CI 上不可复现。
+    //      环境变量是显式、单点、对产品默认行为零影响的做法。
+    //    正常用户不会设这个变量；只有 tools/test-tag-release.ps1 这类测试会设。
+    if (const wchar_t* injected = ::_wgetenv(L"GITRT_GH_EXE")) {
+        const std::wstring exe = Trim(std::wstring(injected));
+        if (!exe.empty() && PathExists(exe)) {
+            info.exe = exe;
+            std::wstring out, err;
+            const RunResult r = RunProcessSync(info.exe, {L"--version"}, L"", 15000, &out, &err);
+            if (!r.spawnFailed && r.exitCode == 0) {
+                std::wstring first = out;
+                if (const size_t nl = first.find(L'\n'); nl != std::wstring::npos) first = first.substr(0, nl);
+                // 标注来源，便于在日志/自检里分辨"用的是桩"
+                info.version = Trim(first) + L"（GITRT_GH_EXE 注入）";
+                info.available = true;
+                return info;
+            }
+            info.error = std::wstring(kGhInstallHint) + L"（GITRT_GH_EXE 指向 " + exe + L"，但它跑不起来）";
+            info.exe.clear();
+            return info;
+        }
+        // 设了但文件不存在：明确报错，而不是悄悄回退（否则测试会"绿得莫名其妙"）
+        if (!exe.empty()) {
+            info.error = L"GITRT_GH_EXE 指向的文件不存在：" + exe;
+            return info;
+        }
+    }
+
     // 1) 先看 PATH 上有没有 gh.exe / gh（不启动进程，便宜且无副作用）
     {
         const std::vector<std::wstring> dirs = SplitPathList(::_wgetenv(L"PATH"));

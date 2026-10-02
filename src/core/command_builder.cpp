@@ -124,6 +124,12 @@ bool FlagEnabled(const std::map<std::string, std::wstring>& flags, const FlagSpe
 }
 
 std::wstring FlagValue(const std::map<std::string, std::wstring>& flags, const FlagSpec& f) {
+    // ToggleValue 的 flag：flags[key] 存的是"勾没勾"（"1"/"0"），
+    // 真正的值另存在 flags[key + ".value"]。这样勾选状态与输入内容互不干扰。
+    if (f.kind == FlagKind::ToggleValue) {
+        const auto itv = flags.find(std::string(f.key) + ".value");
+        return itv == flags.end() ? std::wstring() : itv->second;
+    }
     const auto it = flags.find(f.key);
     return it == flags.end() ? std::wstring() : it->second;
 }
@@ -156,6 +162,29 @@ std::vector<std::wstring> ExpandFlags(const CommandSpec& spec,
             out.push_back(token);
             continue;
         }
+        // ToggleValue：先看勾选，再决定要不要把值填进 {v}。
+        //   勾上 + 留空 → gitArg 里的 {v} 连 "=" 一起去掉（--force-with-lease）
+        //   勾上 + 有值 → 替换 {v}（--force-with-lease=origin/main）
+        if (f.kind == FlagKind::ToggleValue) {
+            const bool tvOn = FlagEnabled(flags, f);
+            if (!tvOn || !f.gitArg) continue;
+            std::wstring token = W(f.gitArg);
+            const size_t pos = token.find(L"{v}");
+            if (pos != std::wstring::npos) {
+                const std::wstring v = FlagValue(flags, f);
+                if (v.empty()) {
+                    // 去掉 "={v}"（连同紧邻的 '='），留纯开关形态
+                    size_t cut = pos;
+                    if (cut > 0 && token[cut - 1] == L'=') --cut;
+                    token.erase(cut, pos + 3 - cut);
+                } else {
+                    token.replace(pos, 3, v);
+                }
+            }
+            out.push_back(token);
+            continue;
+        }
+
         bool on = false;
         if (f.kind == FlagKind::Radio && f.radioGroup) {
             const auto it = flags.find(f.key);
@@ -180,10 +209,31 @@ bool ValidateFlagValues(const CommandSpec& spec, const std::map<std::string, std
     if (!spec.flags) return true;
     for (uint8_t i = 0; i < spec.flagCount; ++i) {
         const FlagSpec& f = spec.flags[i];
-        if (f.kind != FlagKind::Value) continue;
+        const bool isValueKind = (f.kind == FlagKind::Value);
+        const bool isToggleValue = (f.kind == FlagKind::ToggleValue);
+        if (!isValueKind && !isToggleValue) continue;
         const std::wstring v = FlagValue(flags, f);
         if (v.empty()) continue;
+        // ToggleValue 没勾选时，值不参与 argv（也不该因为"填了但没勾"而报错）
+        if (isToggleValue && !FlagEnabled(flags, f)) continue;
         const std::string key = f.key ? f.key : "";
+        if (key == "force-with-lease") {
+            // git：--force-with-lease[=<refname>[:<expect>]]
+            // 只允许"分支/引用名"与一个可选的 ":" 加期望值（哈希或引用名）
+            // 不经过 shell，但仍然拦掉引号、空白、控制字符等明显不合法的输入
+            const size_t colon = v.find(L':');
+            const std::wstring ref = (colon == std::wstring::npos) ? v : v.substr(0, colon);
+            const std::wstring expect = (colon == std::wstring::npos) ? std::wstring() : v.substr(colon + 1);
+            bool ok = IsValidRevision(ref) && (expect.empty() || IsValidRevision(expect));
+            if (!ok) {
+                err->code = 5;
+                err->field = f.key;
+                err->message = L"--force-with-lease 的值要形如 <引用名>[:<期望值>]"
+                               L"（例如 origin/main 或 origin/main:abc1234），当前输入：" + v;
+                return false;
+            }
+            continue;
+        }
         if (key == "depth") {
             // 浅克隆深度：正整数（git 也接受 --depth=<n>），上限给个常识值
             bool ok = !v.empty() && v.size() <= 7;

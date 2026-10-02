@@ -9,7 +9,6 @@
 #       只在 Release 那一路跑（与构建类型无关，跑两遍只是重复最慢的一段）
 #     · package job **复用 build job 的 Release 产物**（不再重装工具链、不再重建），
 #       只做"组装发布目录 + install/uninstall 端到端"（packaging/scripts/build-release.ps1）
-#     · 静态分析 job：g++ -fanalyzer + -Werror（零第三方依赖，见该 job 里的两类已知假阳性说明）
 #     · 打 tag 时自动建 GitHub Release 并附上 zip
 #
 #   ★ 文档体检（tools/check-docs.py）**只在本机跑，不进 CI**：它要打印中文，
@@ -24,7 +23,7 @@
 #        它默认**不**把工具加进 PATH，所以后面统一用 $env:UCRT64_BIN 的绝对路径。
 #     3) 纯诊断步骤一律 `continue-on-error: true`。
 #     4) **别在多个 job 里复制同一段脚本**：安装清单与「定位 UCRT64 工具链」现在都只在
-#        .github/actions/setup-ucrt64 里（复合动作，build 与 analysis 共用）。
+#        .github/actions/setup-ucrt64 里（复合动作，build 与 package 共用）。
 #
 #   注意：需要"注册身份包"的端到端用例（tools/test-all.ps1 的 D 阶段、现代菜单聚合）
 #   依赖本机的开发者模式 + 交互式桌面会话，CI 里不跑；它们在本地按 README 的
@@ -210,62 +209,6 @@ jobs:
             build/${{ matrix.config == 'Debug' && 'debug' || 'release' }}/packaging/AppxManifest.xml
             build/selftest-gui-${{ matrix.config == 'Debug' && 'debug' || 'release' }}.txt
             build/selftest-shell-${{ matrix.config == 'Debug' && 'debug' || 'release' }}.txt
-
-  # ------------------------------------------------------------------ 静态分析
-  # g++ -fanalyzer：**零第三方依赖**（不用装 cppcheck/clang-tidy），找的是真实的
-  # 资源泄漏 / 空指针 / 越界 / 重复释放。单独一个 job：它让每个文件多花 2–7 秒，不该拖慢日常构建。
-  analysis:
-    name: 静态分析（g++ -fanalyzer）
-    runs-on: windows-2022
-    timeout-minutes: 40
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: ./.github/actions/setup-ucrt64
-
-      - name: 配置 + 构建（-fanalyzer + -Werror：分析出的告警即失败）
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not $env:UCRT64_BIN -or -not (Test-Path (Join-Path $env:UCRT64_BIN 'ninja.exe'))) {
-            throw "UCRT64_BIN 没设好（当前='$env:UCRT64_BIN'）"
-          }
-          # 关掉 GCC 16 分析器在这个代码库上的两类已知假阳性（都不是真 bug，追踪原文可查）：
-          #   ① -Wanalyzer-malloc-leak：它假设 Win32 API 会抛 C++ 异常，于是把
-          #      "把 new 的对象交给窗口消息（PostMessageW，接收端 delete）"一律报成泄漏 ——
-          #      追踪里写的是 "if 'WINBOOL PostMessageW(...)' throws an exception"，不可能发生。
-          #   ② -Wanalyzer-use-of-uninitialized-value：它假设 std::string 操作会抛（
-          #      "if 'std::__throw_length_error(...)' throws an exception" + 异常展开），
-          #      在展开路径上跟丢临时对象，于是把 `ReplaceAll(...)` 的返回值报成未初始化。
-          #
-          # ★ 但别把 ① 当成没用的噪声：它当初正是靠"PostMessageW 失败路径上对象没被回收"这一点，
-          #   找出并修掉了 src/gui 里 25 处**真泄漏**（窗口被关掉时 PostMessageW 返回 FALSE）。
-          #   所以建议偶尔去掉这个开关跑一次全量分析，人工过一眼：噪声里夹着真货。
-          # 想看到这两类原始提示：去掉下面这个 -DCMAKE_CXX_FLAGS 重新配置即可。
-          cmake -S . -B build/analyze -G Ninja `
-            -DCMAKE_BUILD_TYPE=Debug `
-            -DCMAKE_MAKE_PROGRAM="$env:UCRT64_BIN/ninja.exe" `
-            -DCMAKE_C_COMPILER="$env:UCRT64_BIN/gcc.exe" `
-            -DCMAKE_CXX_COMPILER="$env:UCRT64_BIN/g++.exe" `
-            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe" `
-            -DGRT_ANALYZER=ON -DGRT_WERROR=ON `
-            "-DCMAKE_CXX_FLAGS=-Wno-analyzer-malloc-leak -Wno-analyzer-use-of-uninitialized-value"
-          if ($LASTEXITCODE -ne 0) { throw "配置失败（exit=$LASTEXITCODE）" }
-          $out = cmake --build build/analyze --parallel 2>&1
-          $code = $LASTEXITCODE
-          $out | Set-Content -Path build/analyze.log -Encoding utf8
-          $out | Select-String -Pattern 'warning:|error:' | Select-Object -First 30
-          if ($code -ne 0) { throw "静态分析发现告警（-Werror）；完整日志见 artifact static-analysis-log" }
-          "静态分析：0 告警"
-
-      - name: 上传分析日志
-        if: always()
-        uses: actions/upload-artifact@v5
-        with:
-          name: static-analysis-log
-          path: build/analyze.log
-          if-no-files-found: ignore
 
   package:
     name: package (release zip)

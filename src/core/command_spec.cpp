@@ -17,7 +17,11 @@ constexpr FlagSpec kPullFlags[] = {
 constexpr FlagSpec kPushFlags[] = {
     {"set-upstream",     "--set-upstream",     FlagKind::Toggle,   nullptr, IDS_FLAG_SET_UPSTREAM, true,  false},
     {"tags",             "--tags",             FlagKind::Toggle,   nullptr, IDS_FLAG_TAGS,         false, false},
-    {"force-with-lease", "--force-with-lease", FlagKind::Dangerous, nullptr, IDS_FLAG_FORCE_WITH_LEASE, false, true},
+    // --force-with-lease 接受**可选值**（git：--force-with-lease[=<refname>[:<expect>]]）：
+    //   勾上但不填 → "--force-with-lease"（用默认的远端跟踪引用）
+    //   勾上并填了 → "--force-with-lease=<refname>[:<expect>]"
+    //   → ToggleValue：勾选框与输入框同一行，勾了就有地方填参数
+    {"force-with-lease", "--force-with-lease={v}", FlagKind::ToggleValue, nullptr, IDS_FLAG_FORCE_WITH_LEASE, false, true},
     {"dry-run",          "--dry-run",          FlagKind::Toggle,   nullptr, IDS_FLAG_DRY_RUN,      false, false},
 };
 

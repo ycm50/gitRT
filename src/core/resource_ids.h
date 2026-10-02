@@ -103,6 +103,8 @@
 #define IDS_FLAG_GENERATE_NOTES    3052   // 自动生成说明 --generate-notes
 #define IDS_FLAG_DRAFT             3053   // 草稿 --draft
 #define IDS_FLAG_PRERELEASE        3054   // 预发布 --prerelease
+// ---- 复选 + 可选值（ToggleValue）：勾上后可填参数的输入框提示
+#define IDS_FLAG_VALUE_HINT        3055   // 值输入框的灰色占位提示
 #define IDS_TERM_GIT_BASH          3040
 #define IDS_TERM_POWERSHELL        3041
 #define IDS_TERM_WT                3042

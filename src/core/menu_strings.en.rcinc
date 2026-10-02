@@ -65,6 +65,7 @@
   IDS_FLAG_SET_UPSTREAM      "Set upstream (--set-upstream)"
   IDS_FLAG_DRY_RUN           "Dry run, do not change anything (--dry-run)"
   IDS_FLAG_FORCE_WITH_LEASE  "Force push (safe --force-with-lease) [danger]"
+  IDS_FLAG_VALUE_HINT        "optional: <refname>[:<expect>], e.g. origin/main"
   IDS_FLAG_ALL               "All remotes (--all)"
   IDS_FLAG_NO_FF             "No fast-forward (--no-ff)"
   IDS_FLAG_SQUASH            "Squash into one commit (--squash)"

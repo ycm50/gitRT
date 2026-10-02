@@ -38,7 +38,7 @@
 | **合并提交（squash）** | 在「合并提交」窗口里**复选连续的提交** → 合并成一条：改动 = 所有选中提交改动之和，提交信息 = 各 subject 自动拼接（可编辑）；带确认框与真实命令行日志；脚本里可用 `--squash` |
 | **标签 / 发布窗口** | 「标签列表」和「发布列表」以及打标签 / 推送 / 删除标签 / 创建发布，都在**同一个专用窗口**里：列表（标签：名称/哈希/类型/日期/主题/**是否已推送到远端**；发布：tag/名称/时间/草稿·预发布）+ **选中一行自动填进表单** + 命令预览 + 真实日志。发布走 GitHub CLI（`gh`），没装/未登录时给中文原因，不影响其它功能 |
 | **41 条命令**（含首选项/自检/AI 助手等内部命令） | 初始化 / 克隆 / 暂存 / 撤销 / 提交 / amend / 拉取 / 推送 / 抓取 / 同步 / 分支切换·新建·合并·变基·删除 / 历史 / 差异 / 文件历史 / 状态面板 / 储藏 / 清理 / 重置 / 维护 / 标签列表·打标签·推送标签·删除标签 / 发布列表·创建发布 / 首选项 / 自检 / AI 助手 …… |
-| **参数面板** | 每条命令的选项、参数、**即将执行的完整命令行实时预览**；危险操作需二次确认 |
+| **参数面板** | 每条命令的选项、参数、**即将执行的完整命令行实时预览**；危险操作需二次确认；**勾选类选项就地留出参数输入位** —— 如勾「强制推送（安全版 --force-with-lease）」后紧邻出现输入框，可填 `origin/main` 或 `origin/main:abc1234`，留空则发纯开关（未勾选时输入内容一律不进 argv） |
 | **执行反馈** | 点「执行」**立即**弹出执行窗口：标题与日志首行是**真实命令行**、输出实时流式回传、结束保留窗口（`Esc`/关闭）；结束后自动**重读 `git status`** 刷新状态面板与底部状态栏 |
 | **状态面板 / 文本窗口** | 文件状态一览（暂存/未暂存/未跟踪）、差异、提交历史、自检报告，可复制 |
 | **AI 助手** | 自然语言 → 结构化计划 → **白名单校验** → 参数面板 → 执行；只发路径/分支名/文件名，不发文件内容；`Internal` 命令禁止 AI 执行 |
@@ -141,14 +141,59 @@ pwsh -File packaging\scripts\dev-uninstall.ps1
 | `GitRT.exe` | `build/<cfg>/src/gui/` | GUI 主程序（`-mwindows`；脚本里用 `Start-Process -Wait` 调用） |
 | `GitRT.Shell.dll` | `build/<cfg>/src/shell/` | 右键菜单扩展 `IExplorerCommand`（构建期强制校验导出表 + 无运行时 DLL 依赖） |
 | `GitRT.ShellProbe.exe` | `build/<cfg>/src/shellprobe/` | 「无资源管理器」验证工具（`--dump` / `--self-test` / `--invoke` / `--shell-menu`） |
+| `GitRT.CoreTests.exe` | `build/<cfg>/src/tests/` | 无窗口单元测试（CTest 用例 `core_selftest`，毫秒级、不需要桌面会话） |
 
-构建期选项：`GRT_DEV_REGISTER`（Debug 默认 ON / Release 默认 OFF）、`GRT_SHELL_PROBE`（菜单探针日志）、`GRT_BUILD_TOOLS`、`GRT_BUILD_TESTS`（构建无窗口的核心单元测试并注册进 CTest）、`GRT_WERROR`（把编译告警当错误；**本地默认 OFF**，**CI 固定 ON 当门禁**）、`GRT_ANALYZER`（`g++ -fanalyzer` 静态分析，慢，CI 有独立 job）。
+构建期选项：`GRT_DEV_REGISTER`（Debug 默认 ON / Release 默认 OFF）、`GRT_SHELL_PROBE`（菜单探针日志）、`GRT_BUILD_TOOLS`、`GRT_BUILD_TESTS`（构建无窗口的核心单元测试并注册进 CTest）、`GRT_WERROR`（把编译告警当错误；**本地默认 OFF**，**CI 固定 ON 当门禁**）。
 
 手工启动（不注册菜单也能用）：
 
 ```powershell
 build\release\src\gui\GitRT.exe "D:\some\repo"          # 打开主窗口并切到该仓库
 ```
+
+### 想在本地把 CI 的检查也跑一遍
+
+```powershell
+# ① 告警门禁（CI 就是这么跑的；本地默认 OFF，所以要在命令行显式打开）
+cmake --preset ucrt64-debug -DGRT_WERROR=ON -DCMAKE_MAKE_PROGRAM=A:/msys64/ucrt64/bin/ninja.exe
+cmake --build build/debug --parallel
+
+# ② 三个 CTest 用例（core_selftest 是毫秒级的无窗口单测）
+ctest --test-dir build/debug --output-on-failure
+
+# ③ 功能套件（纯 CLI + 真 git）
+pwsh -File tools/test-remote.ps1      -Exe build/debug/src/gui/GitRT.exe
+pwsh -File tools/test-squash.ps1      -Exe build/debug/src/gui/GitRT.exe
+pwsh -File tools/test-clone.ps1       -Exe build/debug/src/gui/GitRT.exe
+pwsh -File tools/test-tag-release.ps1 -Exe build/debug/src/gui/GitRT.exe
+
+# ④ 或者：把 CI 的每个步骤在本机按序重放一遍（会模拟 GITHUB_ENV / GITHUB_PATH 传递）
+pwsh -File tools/ci-run-steps.ps1
+```
+
+### 可复现构建
+
+设了 `SOURCE_DATE_EPOCH` 就启用：PE 头的 `TimeDateStamp` 改用它、并用 `-ffile-prefix-map`
+抹掉产物里的绝对构建路径。**不设时行为与以前完全一样**（默认开发体验不变）。
+
+```powershell
+$env:SOURCE_DATE_EPOCH = '1700000000'
+cmake --preset ucrt64-release -DCMAKE_MAKE_PROGRAM=A:/msys64/ucrt64/bin/ninja.exe
+cmake --build build/release
+```
+
+同源码 + 同 epoch → 产物 SHA256 逐字节一致（本机实测过两次独立构建）。
+
+### 测「需要外部程序在场」的路径
+
+`gh` 没装时，发布相关代码以前只能 `[SKIP]`——等于那段路径从没被测过。现在可以用桩：
+
+```powershell
+$env:GITRT_GH_EXE = "$PWD\tools\fake-gh.bat"   # 返回与真 gh 同形状的 JSON
+build\debug\src\gui\GitRT.exe --release-list --out rel.txt --cwd <一个仓库>
+```
+
+不设这个变量时走原来的 PATH 探测，行为零改变；设了但文件不存在会**显式报错**（不静默回退）。
 
 ---
 
@@ -197,9 +242,10 @@ build\release\src\gui\GitRT.exe --ai "把当前改动提交" --cwd . --ai-run   
 ## 测试
 
 ```powershell
-# 1) 核心单元测试（**无窗口、不需要桌面会话**，毫秒级；37 项）
-#    覆盖：porcelain 固件 / 命令表 dry-run / flags 白名单与参数校验 / JSON 工具 /
-#          AI 响应解析与安全闸门 / AI 设置往返与 Key 优先级 / 克隆选项 / AI 只读白名单
+# 1) 核心单元测试（**无窗口、不需要桌面会话**，毫秒级；47 项）
+#    覆盖：porcelain 固件 / 命令表 dry-run / flags 白名单与参数校验（含复选+可选值三态）/
+#          JSON 工具 / AI 响应解析与安全闸门 / AI 设置往返与 Key 优先级 /
+#          克隆选项 / AI 只读白名单 / 本机端点判定 / DPAPI 往返
 build\debug\src\tests\GitRT.CoreTests.exe
 
 # 2) GUI 内置自检（参数面板可构建 / 图标 / 换行 / 执行后状态刷新 / 远端·还原·标签的真实仓库用例）
@@ -238,6 +284,7 @@ pwsh -File tools\test-all.ps1
 | `tools\test-clone.ps1` | 克隆选项端到端：`--depth=1` 真浅克隆（`.git/shallow` + 1 个提交）、非法深度被拦、完整克隆、仓库内子目录克隆不跑偏（15 项） |
 | `tools\demo-live-panel.ps1` | 驱动 GUI 验证面板：查看类命令选中即显示内容、新提交 ~2.5s 内自动刷新、执行类命令输出就地显示且不另开窗口（14 项） |
 | `tools\demo-ai-prompt.ps1` | 系统提示词端到端：自定义提示词确实进了请求体、留空回落到内置默认、首选项里能载入并保存（13 项） |
+| `tools\test-tag-release.ps1` | 标签/发布端到端：打·推·删标签 + 发布列表。其中 **H 段用 `GITRT_GH_EXE` 注入假 gh**，让「发布列表非空 → 字段解析」这条**不依赖真 gh 是否安装**也能真跑（62 项 + 1 跳过） |
 | `tools\test-remote.ps1` | 远端基线（远端前进→落后、本地提交→领先、两段标注）+ 上游设置 + 远端地址增删改 + **5 种还原**（检出/新建分支/软/混合/硬）+ 6 类拒绝（62 项） |
 | `tools\ci-run-steps.ps1`（配 `tools\ci-extract-steps.py`） | 把 `.github/workflows/build.yml` 每个步骤抽出来在本机按序执行、模拟 `GITHUB_ENV`/`GITHUB_PATH` 传递——**推之前先在本机把 CI 跑一遍**（发现过"原生命令管道提前关闭导致步骤退出码 1"和"UCRT64_BIN 为空写坏 CMakeCache"两个坑） |
 | `tools\test-install-uninstall.ps1` | install/uninstall 端到端：pwd→`<盘根>\gitRT`、注册表写入与清理、目录删除、AI 设置备份、幂等（21 项，真装真卸） |
@@ -274,7 +321,6 @@ pwsh -File packaging\scripts\build-msix.ps1 -LayoutOnly     # 只组装稀疏包
 | 阶段 | 内容 |
 | --- | --- |
 | `build`（Debug + Release 矩阵） | MSYS2 UCRT64 工具链 → 配置/构建（**`-DGRT_WERROR=ON`**）→ `ctest`（3 个用例）→ **GUI 自检** → **Shell 自检 + 菜单 dump** → 功能套件（**只在 Release 那一路**跑：纯 CLI 行为，与构建类型无关）→ 上传产物 |
-| `analysis` | **静态分析**：`g++ -fanalyzer` + `-Werror`（零第三方依赖；findings 即失败，日志作为 artifact 上传）。job 里注明了 GCC 16 分析器在本代码库上的**两类已知假阳性**及追踪原文，去掉那个 `-DCMAKE_CXX_FLAGS…` 就能看到原始提示 |
 | `package` | **复用 build job 的 Release 产物**（`download-artifact` → `packaging/scripts/stage-artifacts.ps1` 归位），**不再重装 MSYS2、不再重建** → `build-release.ps1` 组装发布包（`app\` + `package\` + 安装脚本 + zip）→ 安装/卸载端到端 → 上传 zip |
 | `release`（打 `v*` tag 时） | 下载 zip → `gh release create` 建 GitHub Release 并附上发布包 |
 
@@ -282,7 +328,7 @@ pwsh -File packaging\scripts\build-msix.ps1 -LayoutOnly     # 只组装稀疏包
 
 - **objdump 必须在 PATH 上**：根 `CMakeLists.txt` 用 `find_program(objdump)` 做 Shell DLL 导出表校验，找不到只会**告警并跳过**；CI 里显式把 `ucrt64/bin` 加进 `GITHUB_PATH`，并断言 CMakeCache 里确实有 `GRT_OBJDUMP`。
 - **预设里的编译器路径写死本地开发机的 `A:/msys64`**：CI 用命令行 `-D` 覆盖成 runner 的 `C:/msys64`（命令行优先级高于 preset）。
-- **别在多个 job 里复制同一段脚本**：安装清单与「定位 UCRT64 工具链」那 60 行候选路径逻辑原先在 `build` / `package` 各一份、注释还写着"改一处要同步另一处"，现在都只在 [`.github/actions/setup-ucrt64`](.github/actions/setup-ucrt64/action.yml) 里（复合动作，`build` 与 `analysis` 共用）。
+- **别在多个 job 里复制同一段脚本**：安装清单与「定位 UCRT64 工具链」那 60 行候选路径逻辑原先在 `build` / `package` 各一份、注释还写着"改一处要同步另一处"，现在都只在 [`.github/actions/setup-ucrt64`](.github/actions/setup-ucrt64/action.yml) 里（复合动作，`build` 与 `package` 共用）。
 - **package 不必重编译**：`build-msix.ps1 -LayoutOnly` 只要生成好的 `AppxManifest.xml` + 源码里的 `packaging/Assets/*`（不需要编译器、不需要 Windows SDK），而 build job 已经把二进制与清单传上去了；`stage-artifacts.ps1` 负责把 `download-artifact` 的落地层级归成打包脚本期望的 `build/release/...`。手动下载产物后想重打包，也可以用它。
 - **告警当门禁**：CI 两个配置都带 `-DGRT_WERROR=ON`；本地默认 OFF（方便边写边调），提交前建议自己开一次跑通。
   版本号也只有一个来源（`packaging/identity.json`）——`GRT_VERSION`、exe/DLL 的 `FileVersion`、MSIX 清单全部由它派生，**改了它就会自动触发重新 configure**。

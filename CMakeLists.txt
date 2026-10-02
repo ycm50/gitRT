@@ -37,20 +37,35 @@ add_compile_options(-Wall -Wextra -Wno-unknown-pragmas -Wno-unused-parameter -fn
 # .rc 是 UTF-8（含中文字符串）
 set(CMAKE_RC_FLAGS "--codepage=65001")
 
+# --------------------------------------------------------------- 可复现构建
+# 目标：**同一份源码 + 同一个 SOURCE_DATE_EPOCH** → 产物逐字节一致。
+# 本机实测（GCC 16.2 / binutils）确认两处不确定来源：
+#   ① PE 头 TimeDateStamp 默认写"链接时刻" —— 两次构建差 2 秒就会不同；
+#      设 SOURCE_DATE_EPOCH 后 binutils 会用它（实测 1700000000 → 2023-11-15）。
+#   ② 调试信息里带**绝对构建路径**（实测二进制里含 A:/Downloads/tg/_work）；
+#      用 -ffile-prefix-map 映射掉（实测映射后该字符串不再出现）。
+# 源码里没有 __DATE__ / __TIME__（已 grep 确认），所以不需要额外处理。
+#
+# ★ 不设 SOURCE_DATE_EPOCH 时行为与以前**完全一样**（保持默认开发体验）。
+#   想复现：$env:SOURCE_DATE_EPOCH = '1700000000'; cmake --build build/repro
+if(DEFINED ENV{SOURCE_DATE_EPOCH})
+  message(STATUS "可复现构建：SOURCE_DATE_EPOCH=$ENV{SOURCE_DATE_EPOCH}")
+  # 源码根与构建根的绝对路径都要映射，否则 DWARF 里仍会漏出构建目录
+  add_compile_options(
+    "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/src"
+    "-ffile-prefix-map=${CMAKE_BINARY_DIR}=/build")
+endif()
+
 option(GRT_WERROR "把编译警告当错误" OFF)
 if(GRT_WERROR)
   add_compile_options(-Werror)
 endif()
 
-# GCC 静态分析（-fanalyzer）：找的是真实的资源泄漏 / 空指针 / 越界 / 重复释放，且**零第三方依赖**。
-# 默认 OFF（正常开发不跑，单文件约 2–7 秒）；本地或 CI 单独跑：
-#   cmake -S . -B build/analyze -DGRT_ANALYZER=ON && cmake --build build/analyze
-# 走 CMake 而不是自己拼 g++ 命令，是为了让每个目标拿到**正确**的包含路径与宏定义。
-option(GRT_ANALYZER "编译期开启 GCC 静态分析（-fanalyzer，明显变慢）" OFF)
-if(GRT_ANALYZER)
-  add_compile_options(-fanalyzer)
-  message(STATUS "已开启 GCC -fanalyzer 静态分析（编译会明显变慢）")
-endif()
+# 注：这里曾有一个 GRT_ANALYZER 选项（g++ -fanalyzer 静态分析），已按用户要求移除。
+#     它在当时确实有效 —— 正是靠它找出了 src/gui 里 25 处 PostMessageW 交接失败路径上的
+#     真泄漏（见 CHANGELOG「修复」）。那些修复与其成因说明都保留在代码里
+#     （src/gui/post_owned.h 的头注释），不要改回裸指针写法。
+#     若将来想重新加回来：add_compile_options(-fanalyzer) 即可，无需其它改动。
 
 # 开发期传统注册（DllRegisterServer）与探针默认值随构建类型走：
 #   发行版（Release）的导出表**必须**只有 DllGetClassObject / DllCanUnloadNow（§2.8）

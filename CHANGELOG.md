@@ -16,12 +16,23 @@
 
 ### 新增
 
+- **参数的输入位**（用户报告）：勾选类选项现在可以**就地填参数**。
+  例：推送面板勾「强制推送（安全版 --force-with-lease）」后，紧挨着它下方出现一个输入框
+  （勾选前是灰的），可填 `origin/main` 或 `origin/main:abc1234`；
+  留空则发 `--force-with-lease`，填了就发 `--force-with-lease=<值>`。
+  未勾选时输入框内容**一律不进 argv**。实现是新的 `FlagKind::ToggleValue`（命令表声明式驱动），
+  非法值在构造期就被拦下（不会丢给 git 报错）。**实测**三种状态各自的命令预览均正确。
 - **无窗口的核心单元测试**（`src/tests/`，CTest 用例 `core_selftest`）：
   42 项断言覆盖 porcelain 固件、命令表 argv 构造与参数校验、JSON 工具、AI 响应解析与安全闸门、
   本机端点判定、Key 加密不落明文。**零第三方依赖**（自写 45 行断言框架 `check.h`），
   不依赖窗口与桌面会话。
-- **CI 静态分析**：新增 `GRT_ANALYZER` 选项与独立 job（`g++ -fanalyzer` + `-Werror`，日志作为 artifact）。
-  它当场找出并修掉了 GUI 里 25 处 `PostMessageW` 交接失败路径上的**真实内存泄漏**（见"修复"）。
+- **`src/gui` 的 `PostMessageW` 交接统一改成 `unique_ptr` + `release()`**（新增 `src/gui/post_owned.h`）：
+  把"工作线程 `new` 一个对象、交给窗口消息由 UI 线程接管"的 25+ 处写法收敛成一个规矩，
+  并在两处原先**根本没检查返回值**（窗口已销毁时必漏）的地方补上回收。
+- **可复现构建**：设 `SOURCE_DATE_EPOCH` 即启用（PE 头 TimeDateStamp + `-ffile-prefix-map` 去掉绝对路径）。
+  **实测**：同 epoch 两次独立构建 SHA256 **逐字节一致**；epoch 改 1 秒则不同。
+- **`GITRT_GH_EXE` + 假 gh 桩**（`tools/fake-gh.ps1` / `.bat`）：让「发布列表非空 → 字段解析」这条
+  此前**在所有环境都是盲区**的路径被真正执行（以前没装 gh 只能 `[SKIP]`）。测试套件新增 H1–H7。
 - **AI 助手支持本地免鉴权服务**：接口地址指向本机（`localhost` / `127.x` / `[::1]`）时
   **API Key 可以留空**，请求不带 `Authorization` 头 —— Ollama / LM Studio / vLLM / llama.cpp server
   这类本地服务不再需要"编一个假 Key"。
@@ -95,6 +106,11 @@
   - 功能套件**只在 Release 那一路跑**（纯 CLI 行为，与构建类型无关；跑两遍只是重复最慢的一段）；
   - `package` job **改为复用 build job 的 Release 产物**，不再重装 MSYS2、不再重建；
   - 新增 `analysis` job（见"新增"）。
+- **移除静态分析**（按用户要求）：删掉 `analysis` CI job、`GRT_ANALYZER` CMake 选项、
+  `tools/analyzer-gate.ps1` 与 `tools/analyzer-baseline.txt`。它的历史产出**保留**：
+  25 处 `PostMessageW` 交接泄漏已修（见"修复"），成因说明留在 `src/gui/post_owned.h` 头注释里，
+  对应规矩写进了 `CONTRIBUTING.md` §3b —— 所以"没有自动检查了"这件事有明确的文字兜底。
+  想临时再跑一次全量分析：加 `-fanalyzer` 编译即可，无需其它改动。
 - **core 内部接口收敛**：4 份逐字相同的 `RunOut` → `git_runner.h` 的 `RunGitOut` / `RevParseShort`；
   删除死代码 `ShortHash`。这是内部改动，不影响行为。
 - **AI 配置多了一个字段**：`GitRT.ai.json` 新增 `protectKey`（`true` 时 `apiKey` 为 `dpapi:<base64>`）；
@@ -115,10 +131,10 @@
 | --- | --- |
 | `-DGRT_WERROR=ON` 构建 | **0 告警** |
 | `ctest`（Debug） | **3/3 通过** —— `core_selftest` 0.02 s / `gui_selftest` 2.0 s / `shell_selftest` 0.05 s |
-| `GitRT.CoreTests.exe` | **42 通过 / 0 失败**（约 22 ms） |
-| `tools/test-{remote,squash,clone,tag-release}.ps1` | **161 通过 / 0 失败 / 1 跳过** |
-| `tools/test-all.ps1 -SkipShell`（Phase A–C） | **全部通过**（含新增的 C8 本机免 Key / C8b 远端仍拦下） |
-| 静态分析（`-fanalyzer` + `-Werror`，从零编译） | **0 告警** |
+| `GitRT.CoreTests.exe` | **47 通过 / 0 失败**（约 22 ms） |
+| `tools/test-{remote,squash,clone,tag-release}.ps1` | **62 / 29 / 15 / 62 通过 / 0 失败 / 1 跳过** |
+| `tools/test-all.ps1 -SkipShell`（Phase A–C） | **全部通过**（含 C8 本机免 Key / C8b 远端仍拦下） |
+| 静态分析（`-fanalyzer` + `-Werror`，从零编译） | 移除前测得 **0 告警**（该 job 已按用户要求删除） |
 | `tools/demo-ai-settings.ps1`（GUI 驱动 + 截图） | **16 通过 / 0 失败** |
 | 发布包组装（只用 CI 产物，不编译） | 清单校验 8 项全 OK → `app\` + `package\` + install/uninstall + zip，exit=0 |
 
@@ -139,7 +155,7 @@
 | `ci` | 复合动作 `setup-ucrt64` + 功能套件只跑一次 + package 复用产物 | `82132aa` |
 | `feat(ai)` | 本机服务免 Key；明文 HTTP（非本机）给明确告警 | `82132aa` |
 | `feat(ai)` | 可选用 Windows DPAPI 加密保存 Key | `82132aa` |
-| `feat(ci)` | `g++ -fanalyzer` 静态分析门禁 | `82132aa` |
+| `feat(ci)` | `g++ -fanalyzer` 静态分析门禁（**后已移除**，见"变更"） | `82132aa` |
 | `fix(gui)` | 修掉 25 处 `PostMessageW` 交接失败路径上的真实泄漏 | `82132aa` |
 | `docs` | `SECURITY.md` / `CONTRIBUTING.md` + 研究文档归位 + 设计文档目录 | `82132aa` |
 | `docs` | 修 2 条死链与 7 处表格渲染问题 + 设计文档"实现现状"注记 | `82132aa` |

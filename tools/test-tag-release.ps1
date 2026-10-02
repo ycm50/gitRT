@@ -9,6 +9,8 @@
 #   F) --dry-run 不产生任何副作用
 #   G) 发布（gh）：没装 gh → 只断言"如实报告 + 不崩"，并计入 SKIP 不判失败；
 #      装了 gh → 只测 --release-list（**绝不**真的创建 Release）
+#   H) 发布"非空列表"路径：用 GITRT_GH_EXE 注入 tools/fake-gh.bat，**不依赖真 gh**，
+#      让「列出多条 Release → 字段解析」这段此前在所有环境都是盲区的代码被真正执行
 #
 # 注意：试验场必须放在**工作区内**（%TEMP% 里 git 会被文件沙箱挡住，实测）
 # 用法: pwsh -File tools\test-tag-release.ps1 [-Exe <GitRT.exe>]
@@ -240,6 +242,43 @@ if ($null -eq $ghCmd) {
     $r = RunCli @('--release-create','no-such-tag-xyz','--dry-run') 'rel-notag'
     Check "G3 标签不存在 → 拒绝" ((Field $r 'ok') -eq '0' -and (Field $r 'error') -match '标签不存在') "error=$(Field $r 'error')"
 }
+
+# ------------------------------------------------- H) 发布"非空列表"路径（假 gh 桩）
+# 这一段**不依赖真 gh**：用 GITRT_GH_EXE 注入 tools/fake-gh.bat，
+# 从而让「发布列表非空 → 解析出多条记录」这条此前在所有环境都是盲区的路径被真正执行。
+# （此前没装 gh 时只能 [SKIP]，等于这段代码从没跑过。）
+Write-Host "-- H) 发布非空列表（GITRT_GH_EXE 注入假 gh）--" -ForegroundColor Cyan
+$fakeGh = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'fake-gh.bat'))
+$fakePs = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'fake-gh.ps1'))
+if (-not (Test-Path $fakeGh) -or -not (Test-Path $fakePs)) {
+    Skip "桩文件缺失（tools/fake-gh.bat / fake-gh.ps1）"
+} else {
+    $saveGh = $env:GITRT_GH_EXE
+    try {
+        $env:GITRT_GH_EXE = $fakeGh
+        $r = RunCli @('--release-list') 'rel-fake'
+        Check "H1 注入后 gh=1（走桩，不依赖真 gh 是否安装）" ((Field $r 'gh') -eq '1') "text=$($r.text)"
+        Check "H2 列表非空：count=3" ((Field $r 'count') -eq '3') "count=$(Field $r 'count')"
+        Check "H3 第 1 条 tag/标题解析正确" ((Field $r 'release0') -eq 'v1.2.0' -and (Field $r 'title0') -eq 'Release 1.2.0') "r0=$(Field $r 'release0') t0=$(Field $r 'title0')"
+        Check "H4 预发布标志被正确解析（第 3 条 prerelease=1）" ((Field $r 'prerelease2') -eq '1') "pre2=$(Field $r 'prerelease2')"
+        Check "H5 版本串标注了注入来源" ((Has $r 'GITRT_GH_EXE 注入')) "text=$($r.text)"
+        # 安全性质：变量指向不存在的文件时必须**显式失败**，不能悄悄回退成"没装 gh"
+        $env:GITRT_GH_EXE = (Join-Path $LabRoot 'no-such-gh.exe')
+        $r2 = RunCli @('--release-list') 'rel-fake-bad'
+        Check "H6 指向不存在的文件 → 明确报错（不静默回退）" ((Field $r2 'gh') -eq '0' -and (Has $r2 'GITRT_GH_EXE 指向的文件不存在')) "text=$($r2.text)"
+    } finally {
+        if ($null -eq $saveGh) { Remove-Item Env:\GITRT_GH_EXE -ErrorAction SilentlyContinue }
+        else { $env:GITRT_GH_EXE = $saveGh }
+    }
+    # 安全性质：还原后必须与"从未设置"完全一致
+    $r3 = RunCli @('--release-list') 'rel-fake-restored'
+    if ($null -eq $ghCmd) {
+        Check "H7 还原环境变量后行为不变（仍如实报告没装 gh）" ((Field $r3 'gh') -eq '0') "text=$($r3.text)"
+    } else {
+        Check "H7 还原环境变量后行为不变（gh=1，走真 gh）" ((Field $r3 'gh') -eq '1') "text=$($r3.text)"
+    }
+}
+
 
 Write-Host ""
 Write-Host "== 结果: $pass 通过 / $fail 失败 / $skip 跳过 ==" -ForegroundColor Cyan

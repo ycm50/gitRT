@@ -8,6 +8,7 @@
 //         （UI 只做即时提示，真正的判定与拒绝理由由 BuildSquashPlan 给出）
 // ---------------------------------------------------------------------------
 #include "gui.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 
 #include <commctrl.h>
 
@@ -223,17 +224,14 @@ void StartMerge(HWND hwnd, SqState* st) {
         SquashResult r = ApplySquash(
             gitExe, repoRoot, plan,
             [hwnd](const std::wstring& cmd) {
-                auto* s = new std::string(U8(L"> " + cmd) + "\r\n");
-                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+                PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(U8(L"> " + cmd) + "\r\n"));
             },
             [hwnd](const std::string& out) {
                 if (out.empty()) return;
-                auto* s = new std::string(out);
-                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+                PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(out));
             });
-        // 窗口已销毁时 PostMessageW 失败 → 自己回收结果对象，避免泄漏
-        auto* done = new SquashResult(r);
-        if (!::PostMessageW(hwnd, WM_GRT_SQ_DONE, 0, reinterpret_cast<LPARAM>(done))) delete done;
+        // 窗口已销毁时投递会失败 → PostOwned 就地回收，避免泄漏
+        PostOwned(hwnd, WM_GRT_SQ_DONE, std::make_unique<SquashResult>(r));
     }).detach();
 }
 

@@ -142,6 +142,65 @@ int main() {
         }
         t.Check(ok, L"flags 白名单：已登记项进入 argv，未登记项被忽略");
     }
+
+    // ---- 3b. ToggleValue（复选 + 可选值）：三种状态都要对 ----
+    //   git 的语义：--force-with-lease[=<refname>[:<expect>]]
+    //     未勾选          -> argv 里**不该出现**这个 flag
+    //     勾选 + 值留空   -> "--force-with-lease"（用默认跟踪引用）
+    //     勾选 + 填了值   -> "--force-with-lease=<值>"
+    {
+        const CommandSpec* push = FindCommandByKey("sync.push");
+        if (!push) {
+            t.Check(false, L"ToggleValue：找不到 sync.push 命令");
+        } else {
+            auto buildPush = [&](const std::wstring& check, const std::wstring& val,
+                                 BuiltCommand* out, BuildError* err) {
+                BuildInput in;
+                in.spec = push;
+                in.gitExe = L"git.exe";
+                in.repoRoot = L"C:\\selftest\\repo";
+                if (!check.empty()) in.flags["force-with-lease"] = check;
+                if (!val.empty()) in.flags["force-with-lease.value"] = val;
+                return BuildCommand(in, out, err);
+            };
+            auto leaseArg = [](const BuiltCommand& c) -> std::wstring {
+                if (c.argvList.empty()) return {};
+                for (const auto& a : c.argvList[0]) {
+                    if (a.rfind(L"--force-with-lease", 0) == 0) return a;
+                }
+                return {};
+            };
+
+            BuiltCommand a, b, c;
+            BuildError e1, e2, e3;
+            // 未勾选：即使值框里残留了内容，也不得进 argv
+            const bool r1 = buildPush(L"0", L"origin/main", &a, &e1);
+            // 勾选 + 留空 -> 纯开关
+            const bool r2 = buildPush(L"1", L"", &b, &e2);
+            // 勾选 + 有值 -> 带 =
+            const bool r3 = buildPush(L"1", L"origin/main", &c, &e3);
+            t.Check(r1 && leaseArg(a).empty(),
+                    L"ToggleValue：未勾选时 flag 不进 argv（值框内容被忽略）");
+            t.Check(r2 && leaseArg(b) == L"--force-with-lease",
+                    L"ToggleValue：勾选且值留空 -> 纯开关 --force-with-lease");
+            t.Check(r3 && leaseArg(c) == L"--force-with-lease=origin/main",
+                    L"ToggleValue：勾选且填了值 -> --force-with-lease=<值>");
+
+            // 值与 :期望值 的组合（git 的 [=<refname>[:<expect>]]）
+            BuiltCommand d;
+            BuildError e4;
+            const bool r4 = buildPush(L"1", L"origin/main:abc1234", &d, &e4);
+            t.Check(r4 && leaseArg(d) == L"--force-with-lease=origin/main:abc1234",
+                    L"ToggleValue：<引用名>:<期望值> 形态原样进 argv");
+
+            // 非法值必须在**构造期**被拦下，而不是丢给 git 报错
+            BuiltCommand f;
+            BuildError e5;
+            const bool r5 = buildPush(L"1", L"origin/main; rm -rf /", &f, &e5);
+            t.Check(!r5, L"ToggleValue：非法值（含分号/空格）在构造期被拒绝");
+        }
+    }
+
     t.Check(!IsValidBranchName(L"-evil") && !IsValidBranchName(L"a..b") && IsValidBranchName(L"feature/x"),
             L"分支名校验");
     t.Check(!IsValidUrl(L"--upload-pack=evil") && IsValidUrl(L"https://example.com/a.git") &&

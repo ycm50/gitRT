@@ -37,7 +37,16 @@ enum class ParamSource : uint8_t {
 
 enum class ExecKind : uint8_t { Internal, Cli, CliPanel, CliStream };
 
-enum class FlagKind : uint8_t { Toggle, Radio, Value, Dangerous };
+enum class FlagKind : uint8_t {
+    Toggle,       // 复选：勾上 → gitArg 整个进 argv
+    Radio,        // 单选（radioGroup 内互斥）
+    Value,        // 值型：**没有勾选框**，填了值就进 argv（gitArg 里的 {v} 被替换）
+    Dangerous,    // 复选，勾上后「执行」需二次确认
+    ToggleValue,  // 复选 + **可选值**：勾上才生效；值填了 → gitArg 的 {v} 替换，留空 → gitArg 原样
+                  //   典型：git push --force-with-lease[=<refname>[:<expect>]]
+                  //   面板上渲染成「一行：复选框 + 标签 +（勾选后启用的）输入框」，
+                  //   这样用户勾了选项**当场就有地方填参数**，不必去别处找。
+};
 
 struct FlagSpec {
     const char* key;         // 稳定 key（配置持久化、白名单校验）
