@@ -129,7 +129,8 @@ void ShowReleaseWindow(HWND owner);
 // 这类"菜单里有、点下去未实现"的 bug 靠人眼是看不出来的。
 // 现在把映射抽成纯函数：分派用它，GUI 自检也用它遍历命令表断言"没有命令落到 Unimplemented"。
 enum class InternalAction {
-    Console,         // app.console：把主窗口带到前台
+    // Console（app.console「打开 GitRT 控制台」）已按用户要求移除：它和"把主窗口带到前台"
+    // 是同一件事，菜单里多一项只增加噪声。命令 ID 1003 保留空缺，不复用。
     Terminal,        // app.terminal
     Gitignore,       // commit.ignore
     SquashWindow,    // commit.squash

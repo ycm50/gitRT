@@ -4,6 +4,7 @@
 // 注意初始化顺序：spec/cmd/cancel 必须在 WM_NCCREATE 中从 lpCreateParams 拷贝完成，
 // 因为 WM_CREATE 里就会启动工作线程读取它们（否则是数据竞争）。
 #include "gui.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 
 #include <atomic>
 #include <thread>
@@ -53,10 +54,8 @@ int LastPercent(const std::string& line) {
 }
 
 void PostLog(HWND hwnd, const std::string& line) {
-    auto* payload = new std::string(line);
-    // 窗口已销毁时 PostMessageW 会失败 → 自己回收（否则泄漏；-fanalyzer 会报 malloc-leak）
-    if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(payload)))
-        delete payload;
+    // 窗口已销毁时投递会失败 → PostOwned 就地回收（否则泄漏；-fanalyzer 会报 malloc-leak）
+    PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(line));
 }
 
 // 顺序执行 BuiltCommand 的多条命令：日志/进度都投给 hwnd，结果写进 oc。
@@ -133,9 +132,9 @@ void RunCommandSequence(HWND hwnd, const CommandSpec& spec, const BuiltCommand& 
 }
 
 void WorkerProc(ProgState* st, HWND hwnd) {
-    auto* oc = new TaskOutcome();
-    RunCommandSequence(hwnd, st->spec, st->cmd, st->cancel.get(), oc);
-    if (!::PostMessageW(hwnd, WM_GRT_TASK_DONE, 0, reinterpret_cast<LPARAM>(oc))) delete oc;
+    auto oc = std::make_unique<TaskOutcome>();
+    RunCommandSequence(hwnd, st->spec, st->cmd, st->cancel.get(), oc.get());
+    PostOwned(hwnd, WM_GRT_TASK_DONE, std::move(oc));
 }
 
 void AppendLog(HWND edit, const std::wstring& line, size_t* counter) {
@@ -241,7 +240,7 @@ LRESULT CALLBACK ProgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 先把"运行结果"汇总回宿主窗口（AI 助手窗口靠它显示结果）
             HWND owner = ::GetWindow(hwnd, GW_OWNER);
             if (owner) {
-                auto* ts = new TaskSummary();
+                auto ts = std::make_unique<TaskSummary>();
                 ts->ok = oc->ok;
                 ts->cancelled = oc->cancelled;
                 ts->exitCode = oc->exitCode;
@@ -250,7 +249,8 @@ LRESULT CALLBACK ProgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 std::string body = oc->out;
                 if (body.size() > 8000) body = body.substr(body.size() - 8000);   // 只留尾部
                 ts->output = W(body);
-                ::PostMessageW(owner, WM_GRT_TASK_FINISHED, 0, reinterpret_cast<LPARAM>(ts));
+                // ★ 原先这里没检查返回值 —— 投递失败就是**必漏**（窗口已销毁时）
+                PostOwned(owner, WM_GRT_TASK_FINISHED, std::move(ts));
             }
 
             // ★ 执行结束**一定**刷新状态（无论成功/失败/取消）：命令可能已经改了工作区，
@@ -362,10 +362,10 @@ void RunBuiltCommandOn(HWND target, const CommandSpec& spec, const BuiltCommand&
     };
     auto* job = new Job{spec, cmd, std::move(cancel)};
     std::thread([target, job]() {
-        auto* oc = new TaskOutcome();
-        RunCommandSequence(target, job->spec, job->cmd, job->cancel.get(), oc);
-        if (!::PostMessageW(target, WM_GRT_TASK_DONE, 0, reinterpret_cast<LPARAM>(oc))) delete oc;
-        delete job;
+        std::unique_ptr<Job> jobGuard(job);   // 无论投递成败都要回收
+        auto oc = std::make_unique<TaskOutcome>();
+        RunCommandSequence(target, job->spec, job->cmd, job->cancel.get(), oc.get());
+        PostOwned(target, WM_GRT_TASK_DONE, std::move(oc));
     }).detach();
 }
 void RunBuiltCommand(HWND owner, const CommandSpec& spec, const BuiltCommand& cmd) {

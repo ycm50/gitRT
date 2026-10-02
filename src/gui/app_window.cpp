@@ -1,6 +1,7 @@
 // 主窗口：左命令导航 / 右内容（状态视图或参数面板）/ 顶部仓库选择（《技术实现设计》§9.1）
 #include "gui.h"
 #include "config.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 #include "remote.h"
 #include <memory>
 #include <thread>
@@ -256,10 +257,8 @@ LRESULT CALLBACK AppProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         const std::wstring err = FetchRemote(git, root);
                         // ★ PostMessageW 可能失败（窗口已销毁）——这时 new 出来的对象必须自己回收。
                         //   漏掉这一句就是泄漏（GCC -fanalyzer 的 -Wanalyzer-malloc-leak 会指出来）。
-                        auto* payload = new std::wstring(err);
-                        if (!::PostMessageW(hwnd, WM_GRT_AUTOFETCH_DONE, 0,
-                                            reinterpret_cast<LPARAM>(payload)))
-                            delete payload;
+                        PostOwned(hwnd, WM_GRT_AUTOFETCH_DONE,
+                                  std::make_unique<std::wstring>(err));
                     }).detach();
                 }
             }

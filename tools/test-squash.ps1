@@ -8,7 +8,8 @@
 #     D) 选择里含 merge 提交      → 拒绝
 #     E) 只选 1 条                → 拒绝
 #     F) 暂存区有改动             → 拒绝
-#     G) 区间触到根提交           → 拒绝
+#     G) 区间触到根提交（含 HEAD）  → 成功：整仓压成 1 条，新提交**没有父**，tree 不变
+#     G2) 区间触到根提交（不含 HEAD）→ 成功：顶部提交保留，新根没有父
 #     H) 自定义合并信息           → 生效
 #
 # 用法: pwsh -File tools\test-squash.ps1 [-Exe <GitRT.exe>]
@@ -49,7 +50,7 @@ function RunSquash($repo, [string]$hashes, [string]$msg = '', [switch]$DryRun) {
     $txt = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
     if (-not $txt) { $txt = '' }
     $r = [ordered]@{ exit = $p.ExitCode; raw = $txt }
-    foreach ($k in @('ok', 'mode', 'error', 'new_hash', 'message_first', 'commits', 'message_lines')) {
+    foreach ($k in @('ok', 'mode', 'error', 'new_hash', 'message_first', 'commits', 'message_lines', 'base', 'touches_root')) {
         $m = [regex]::Match($txt, "(?m)^$k=(.*)$")
         if ($m.Success) { $r[$k] = $m.Groups[1].Value.Trim() }
     }
@@ -164,13 +165,41 @@ $res = RunSquash $repo (@($hashes[0], $hashes[1]) -join ',')
 Check "F 被拒绝" ($res.ok -eq '0') "ok=$($res.ok)"
 Check "F 提示'暂存区'" ($res.error -match '暂存区') "error=$($res.error)"
 
-# ---------------------------------------------------------------- G) 根提交
-Write-Host "`n-- G) 区间触到根提交 → 拒绝 --" -ForegroundColor Cyan
+# ------------------------------------------------- G) 根提交（含 HEAD，整仓覆盖）
+Write-Host "`n-- G) 含 HEAD 且触到根提交 → 整仓覆盖成 1 条（新提交无父）--" -ForegroundColor Cyan
 $repo = New-Lab 'g-root' 3
+$tree0 = TreeOf $repo
 $hashes = HashList $repo
-$res = RunSquash $repo (@($hashes[1], $hashes[2]) -join ',')   # c2 + 根 c1
-Check "G 被拒绝" ($res.ok -eq '0') "ok=$($res.ok)"
-Check "G 提示'根提交'" ($res.error -match '根提交') "error=$($res.error)"
+$res = RunSquash $repo (@($hashes[0], $hashes[1], $hashes[2]) -join ',')   # 全部三条（含根）
+Check "G 执行成功" ($res.ok -eq '1' -and $res.exit -eq 0) "raw=$($res.raw)"
+Check "G 模式是 commit-tree+reset" ($res.mode -eq 'commit-tree+reset') "mode=$($res.mode)"
+Check "G 标明触根（touches_root=1）" ($res.touches_root -eq '1') "touches_root=$($res.touches_root)"
+Check "G base=(none)（新提交没有父）" ($res.base -eq '(none)') "base=$($res.base)"
+Check "G 提交数 3 → 1" ((CountOf $repo) -eq 1) "count=$(CountOf $repo)"
+$parents = ((Invoke-Git $repo @('rev-list', '--parents', '-n', '1', 'HEAD')).Trim() -split '\s+')
+Check "G 新提交没有父（真的是根）" ($parents.Count -eq 1) ($parents -join ' ')
+Check "G HEAD 的 tree 不变（整仓改动之和）" ((TreeOf $repo) -eq $tree0) 'tree 变了'
+Check "G 工作区干净" (Clean $repo) (Invoke-Git $repo @('status', '--porcelain'))
+Check "G 合并信息 = c1/c2/c3 拼接" ((MsgOf $repo 'HEAD') -eq "c1`nc2`nc3") "msg=[$(MsgOf $repo 'HEAD')]"
+
+# ------------------------------------- G2) 根提交但不含 HEAD（顶部提交要被重放）
+Write-Host "`n-- G2) 不含 HEAD 但触到根提交 → 顶部提交保留，新根无父 --" -ForegroundColor Cyan
+$repo = New-Lab 'g2-root-mid' 4
+$hashes = HashList $repo          # [0]=c4 … [3]=c1(根)
+$tree0 = TreeOf $repo
+$topSubject = MsgOf $repo 'HEAD'
+$res = RunSquash $repo (@($hashes[1], $hashes[2], $hashes[3]) -join ',')   # c3,c2,c1
+Check "G2 执行成功" ($res.ok -eq '1') "raw=$($res.raw)"
+Check "G2 模式是 commit-tree+rebase" ($res.mode -eq 'commit-tree+rebase') "mode=$($res.mode)"
+Check "G2 标明触根（touches_root=1）" ($res.touches_root -eq '1') "touches_root=$($res.touches_root)"
+Check "G2 base=(none)" ($res.base -eq '(none)') "base=$($res.base)"
+Check "G2 提交数 4 → 2" ((CountOf $repo) -eq 2) "count=$(CountOf $repo)"
+Check "G2 顶部提交信息保留（$topSubject）" ((MsgOf $repo 'HEAD') -eq $topSubject) "msg=$(MsgOf $repo 'HEAD')"
+Check "G2 合并后的提交信息 = c1/c2/c3" ((MsgOf $repo 'HEAD~1') -eq "c1`nc2`nc3") "msg=$(MsgOf $repo 'HEAD~1')"
+$rootParents = ((Invoke-Git $repo @('rev-list', '--parents', '-n', '1', 'HEAD~1')).Trim() -split '\s+')
+Check "G2 新根没有父" ($rootParents.Count -eq 1) ($rootParents -join ' ')
+Check "G2 HEAD 的 tree 不变" ((TreeOf $repo) -eq $tree0) 'tree 变了'
+Check "G2 工作区干净" (Clean $repo) (Invoke-Git $repo @('status', '--porcelain'))
 
 # ------------------------------------------------------- H) 自定义合并信息
 Write-Host "`n-- H) 自定义合并信息 --" -ForegroundColor Cyan

@@ -278,7 +278,9 @@ int RunCliSquash(const CliOptions& o) {
     }
     sink.LineW(L"oldest=" + plan.oldestHash);
     sink.LineW(L"newest=" + plan.newestHash);
-    sink.LineW(L"base=" + plan.oldestParent);
+    // 触到根提交时新提交没有父（整仓覆盖）→ base=(none)，脚本据此区分两种模式
+    sink.LineW(L"base=" + (plan.hasParent ? plan.oldestParent : std::wstring(L"(none)")));
+    sink.Line(std::string("touches_root=") + (plan.touchesRoot ? "1" : "0"));
     sink.LineW(L"mode=" + plan.mode);
     sink.Line("commits=" + std::to_string(plan.commits.size()));
     sink.Line("message_lines=" +
@@ -980,6 +982,17 @@ int RunCliAi(const CliOptions& o) {
     sink.Line("cmdline=" + WideToUtf8(r.built.display));
     for (size_t i = 0; i < r.built.argvList.size(); ++i)
         sink.Line("argv" + std::to_string(i) + "=" + Argv0Line(r.built.argvList[i]));
+
+    // GUI 内部命令：方案**被接受**，但没有 argv —— CLI 侧不能"执行"它，如实报告并给出 exit=1
+    // （脚本据此判断"没跑"，与 --run 的 internal 契约一致）。GUI 里点「执行」会打开对应窗口。
+    if (r.needsGui) {
+        sink.Line("needs_gui=1");
+        sink.Line("executed=0");
+        sink.Line("note=internal command (opens a window in the GUI); nothing executed here");
+        sink.Line("exit=1");
+        sink.Flush();
+        return 1;
+    }
 
     if (o.dryRun || !o.aiRun) {
         sink.Line("dry_run=" + std::string(o.dryRun ? "1" : "0"));

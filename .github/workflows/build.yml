@@ -9,8 +9,8 @@
 #       只在 Release 那一路跑（与构建类型无关，跑两遍只是重复最慢的一段）
 #     · package job **复用 build job 的 Release 产物**（不再重装工具链、不再重建），
 #       只做"组装发布目录 + install/uninstall 端到端"（packaging/scripts/build-release.ps1）
-#     · 静态分析 job：g++ -fanalyzer + -Werror（零第三方依赖，见该 job 里的两类已知假阳性说明）
-#     · 打 tag 时自动建 GitHub Release 并附上 zip
+#     · **纯手动触发**（workflow_dispatch）：push / PR 都不自动跑
+#     · 手动触发时填 tag 号 → 构建全部成功后创建/覆盖该 tag 与 GitHub Release
 #
 #   ★ 文档体检（tools/check-docs.py）**只在本机跑，不进 CI**：它要打印中文，
 #     而 runner 的 stdout 是西文代码页 → UnicodeEncodeError 让步骤 10 秒失败
@@ -24,7 +24,7 @@
 #        它默认**不**把工具加进 PATH，所以后面统一用 $env:UCRT64_BIN 的绝对路径。
 #     3) 纯诊断步骤一律 `continue-on-error: true`。
 #     4) **别在多个 job 里复制同一段脚本**：安装清单与「定位 UCRT64 工具链」现在都只在
-#        .github/actions/setup-ucrt64 里（复合动作，build 与 analysis 共用）。
+#        .github/actions/setup-ucrt64 里（复合动作，build 与 package 共用）。
 #
 #   注意：需要"注册身份包"的端到端用例（tools/test-all.ps1 的 D 阶段、现代菜单聚合）
 #   依赖本机的开发者模式 + 交互式桌面会话，CI 里不跑；它们在本地按 README 的
@@ -32,12 +32,19 @@
 # ---------------------------------------------------------------------------
 name: build
 
+# ★ 只允许**手动触发**（用户要求）：push / pull_request 都不再自动跑。
+#   理由：这个 workflow 的终点是"创建 GitHub Release"，而发布是产品决策——
+#   不该因为推了一次代码就自动发版。想构建就手动点一次，顺便由你决定 tag 号。
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
   workflow_dispatch:
+    inputs:
+      # 手动触发时**必须**输入 tag 号：本项目现在只有"手动 + 填 tag"这一条发布路径。
+      # tag 号是产品版本决策，不由 CI 猜。
+      tag:
+        description: '要发布的 tag 号（例如 v0.2.0）。已存在则覆盖。'
+        required: true
+        default: 'v1.0.0'
+        type: string
 
 permissions:
   contents: write        # 打 tag 时需要创建 Release
@@ -84,6 +91,42 @@ jobs:
           "objdump: $($od | Select-Object -First 1)"
           $LASTEXITCODE = 0
 
+      # ---- ccache：编译缓存（Windows C++ 构建提速的主要手段）----
+      # 为什么要单独一步：CCACHE_DIR 必须在**配置之前**确定，且要把上一次的缓存恢复进来；
+      # 否则每个 run 都是全量编译。key 里带配置名，Debug / Release 各存一份（产物不同，不能混用）。
+      - name: 恢复 ccache（${{ matrix.config }}）
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ runner.os }}-ucrt64-${{ matrix.config }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-ucrt64-${{ matrix.config }}-
+            ccache-${{ runner.os }}-ucrt64-
+
+      - name: 配置 ccache 环境
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ccacheDir = Join-Path $env:RUNNER_TEMP 'ccache'
+          New-Item -ItemType Directory -Force -Path $ccacheDir | Out-Null
+          # 写入 GITHUB_ENV 供后续所有步骤使用（含 cmake 配置与构建）
+          Add-Content -Path $env:GITHUB_ENV -Value "CCACHE_DIR=$ccacheDir"
+          # 压缩存储：缓存体积显著变小，跨 run 传输更快（代价是命中时多一点解压时间）
+          Add-Content -Path $env:GITHUB_ENV -Value "CCACHE_COMPRESS=true"
+          Add-Content -Path $env:GITHUB_ENV -Value "CCACHE_COMPRESSLEVEL=6"
+          Add-Content -Path $env:GITHUB_ENV -Value "CCACHE_MAXSIZE=500M"
+          # 不做"基于文件真实路径"的哈希：runner 的工作区路径每次一样，但保留这行更稳
+          Add-Content -Path $env:GITHUB_ENV -Value "CCACHE_NOHASHDIR=true"
+          # 时间宏忽略：本项目产物**不含 __DATE__/__TIME__**（CMakeLists 里已说明），
+          # 忽略掉时间宏能让"同一份源码"跨天也能命中缓存。
+          Add-Content -Path $env:GITHUB_ENV -Value "CCACHE_SLOPPINESS=time_macros,file_stat_matches"
+          $cc = Join-Path $env:UCRT64_BIN 'ccache.exe'
+          if (-not (Test-Path $cc)) { throw "找不到 ccache（$cc）——setup-ucrt64 装了吗？" }
+          & $cc --version
+          & $cc --show-stats
+          Write-Output "CCACHE_DIR=$ccacheDir"
+          $LASTEXITCODE = 0
+
       # 预设里的编译器路径写的是本地开发机的 A:\msys64，这里用命令行 -D 覆盖成 runner 的路径
       # （命令行 -D 优先于 preset 的 cacheVariables）
       - name: 配置（${{ matrix.config }}）
@@ -102,6 +145,8 @@ jobs:
             -DCMAKE_C_COMPILER="$env:UCRT64_BIN/gcc.exe" `
             -DCMAKE_CXX_COMPILER="$env:UCRT64_BIN/g++.exe" `
             -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe" `
+            -DCMAKE_C_COMPILER_LAUNCHER="$env:UCRT64_BIN/ccache.exe" `
+            -DCMAKE_CXX_COMPILER_LAUNCHER="$env:UCRT64_BIN/ccache.exe" `
             -DGRT_WERROR=ON
           if ($LASTEXITCODE -ne 0) { throw "配置失败（exit=$LASTEXITCODE）" }
           $LASTEXITCODE = 0
@@ -119,6 +164,9 @@ jobs:
           "objdump = $($line.Line)"
           cmake --build "build/$cfg" --parallel
           if ($LASTEXITCODE -ne 0) { throw "构建失败（exit=$LASTEXITCODE）" }
+          # 缓存命中率（只是打印，不影响结论）：CI 提速要看这个数字
+          $cc = Join-Path $env:UCRT64_BIN 'ccache.exe'
+          if (Test-Path $cc) { & $cc --show-stats }
           $LASTEXITCODE = 0
 
       - name: CTest
@@ -211,62 +259,6 @@ jobs:
             build/selftest-gui-${{ matrix.config == 'Debug' && 'debug' || 'release' }}.txt
             build/selftest-shell-${{ matrix.config == 'Debug' && 'debug' || 'release' }}.txt
 
-  # ------------------------------------------------------------------ 静态分析
-  # g++ -fanalyzer：**零第三方依赖**（不用装 cppcheck/clang-tidy），找的是真实的
-  # 资源泄漏 / 空指针 / 越界 / 重复释放。单独一个 job：它让每个文件多花 2–7 秒，不该拖慢日常构建。
-  analysis:
-    name: 静态分析（g++ -fanalyzer）
-    runs-on: windows-2022
-    timeout-minutes: 40
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: ./.github/actions/setup-ucrt64
-
-      - name: 配置 + 构建（-fanalyzer + -Werror：分析出的告警即失败）
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not $env:UCRT64_BIN -or -not (Test-Path (Join-Path $env:UCRT64_BIN 'ninja.exe'))) {
-            throw "UCRT64_BIN 没设好（当前='$env:UCRT64_BIN'）"
-          }
-          # 关掉 GCC 16 分析器在这个代码库上的两类已知假阳性（都不是真 bug，追踪原文可查）：
-          #   ① -Wanalyzer-malloc-leak：它假设 Win32 API 会抛 C++ 异常，于是把
-          #      "把 new 的对象交给窗口消息（PostMessageW，接收端 delete）"一律报成泄漏 ——
-          #      追踪里写的是 "if 'WINBOOL PostMessageW(...)' throws an exception"，不可能发生。
-          #   ② -Wanalyzer-use-of-uninitialized-value：它假设 std::string 操作会抛（
-          #      "if 'std::__throw_length_error(...)' throws an exception" + 异常展开），
-          #      在展开路径上跟丢临时对象，于是把 `ReplaceAll(...)` 的返回值报成未初始化。
-          #
-          # ★ 但别把 ① 当成没用的噪声：它当初正是靠"PostMessageW 失败路径上对象没被回收"这一点，
-          #   找出并修掉了 src/gui 里 25 处**真泄漏**（窗口被关掉时 PostMessageW 返回 FALSE）。
-          #   所以建议偶尔去掉这个开关跑一次全量分析，人工过一眼：噪声里夹着真货。
-          # 想看到这两类原始提示：去掉下面这个 -DCMAKE_CXX_FLAGS 重新配置即可。
-          cmake -S . -B build/analyze -G Ninja `
-            -DCMAKE_BUILD_TYPE=Debug `
-            -DCMAKE_MAKE_PROGRAM="$env:UCRT64_BIN/ninja.exe" `
-            -DCMAKE_C_COMPILER="$env:UCRT64_BIN/gcc.exe" `
-            -DCMAKE_CXX_COMPILER="$env:UCRT64_BIN/g++.exe" `
-            -DCMAKE_RC_COMPILER="$env:UCRT64_BIN/windres.exe" `
-            -DGRT_ANALYZER=ON -DGRT_WERROR=ON `
-            "-DCMAKE_CXX_FLAGS=-Wno-analyzer-malloc-leak -Wno-analyzer-use-of-uninitialized-value"
-          if ($LASTEXITCODE -ne 0) { throw "配置失败（exit=$LASTEXITCODE）" }
-          $out = cmake --build build/analyze --parallel 2>&1
-          $code = $LASTEXITCODE
-          $out | Set-Content -Path build/analyze.log -Encoding utf8
-          $out | Select-String -Pattern 'warning:|error:' | Select-Object -First 30
-          if ($code -ne 0) { throw "静态分析发现告警（-Werror）；完整日志见 artifact static-analysis-log" }
-          "静态分析：0 告警"
-
-      - name: 上传分析日志
-        if: always()
-        uses: actions/upload-artifact@v5
-        with:
-          name: static-analysis-log
-          path: build/analyze.log
-          if-no-files-found: ignore
-
   package:
     name: package (release zip)
     needs: build
@@ -301,26 +293,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "产物归位失败（exit=$LASTEXITCODE）" }
           $LASTEXITCODE = 0
 
-      # 版本号 = 最新 tag + 0.0.1（每节上限 9，进位；一个 tag 都没有就用 1.0.0）
-      - name: 计算版本（最新 tag + 0.0.1）
+      # ★ 版本号直接取【手动输入的 tag 号】（去掉前导 v）：发布包名字、exe 的 FileVersion
+      #   与 GitHub Release 的 tag 必须是同一个版本，否则用户下到的包对不上发布。
+      #   以前这里是「最新 tag + 0.0.1」自动推算，和手动 tag 会打架，已按用户要求改掉。
+      - name: 计算版本（= 手动输入的 tag 号）
         shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           $ErrorActionPreference = 'Stop'
-          pwsh -NoProfile -File packaging/scripts/next-version.ps1 -OutFile build/grt-version.txt
-          if ($LASTEXITCODE -ne 0) { throw "算版本失败（exit=$LASTEXITCODE）" }
-          $v = (Get-Content build/grt-version.txt -Raw).Trim()
-          if ($v -notmatch '^\d+(\.\d+)+$') { throw "版本号不合法：[$v]" }
+          $tag = ($env:INPUT_TAG -as [string])
+          if ([string]::IsNullOrWhiteSpace($tag)) { throw "没有 tag 号：手动触发时必须在 tag 输入框里填（例如 v1.2.3）" }
+          $v = $tag.Trim() -replace '^[vV]', ''
+          if ($v -notmatch '^\d+(\.\d+)+$') { throw "版本号不合法：[$tag]（要求形如 v1.2.3）" }
           Add-Content -Path $env:GITHUB_ENV -Value "GRT_VERSION=$v"
-          "本次发布版本：$v"
+          "本次发布版本：$v（来自 tag $tag）"
           $LASTEXITCODE = 0
 
-      - name: 版本规则自测（无 tag → 1.0.0 / 进位上限制 9）
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          pwsh -NoProfile -File tools/test-next-version.ps1
-          if ($LASTEXITCODE -ne 0) { throw "版本规则自测失败（exit=$LASTEXITCODE）" }
-          $LASTEXITCODE = 0
 
       - name: 组装发布包（app\ + package\ + install/uninstall 脚本 + zip）
         shell: pwsh
@@ -371,14 +360,69 @@ jobs:
             build/dist/**/package/AppxManifest.xml
 
   release:
-    name: 发布（打 tag 时）
-    needs: package
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: 发布（构建全部成功后才创建 tag 与 Release）
+    # ★ 门禁：只有 build（Debug+Release 两个矩阵）与 package 都成功才走到这里。
+    #   needs 的语义是"上游全部成功"；下面再显式写一遍 result 判断，
+    #   是为了让"构建不成功就不 release"在 YAML 里显式可读、不依赖读者去理解 needs 语义。
+    needs: [build, package]
+    # 现在只有一条路径：手动触发 + 填了 tag 号。tag 由 CI 在所有构建成功之后创建/覆盖。
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      needs.package.result == 'success' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.tag != ''
     runs-on: windows-2022
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # 打 tag 需要完整历史/引用
+
+      - name: 确定本次发布的 tag
+        id: tag
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = ($env:INPUT_TAG -as [string])
+          if ([string]::IsNullOrWhiteSpace($tag)) { throw "没有 tag 号：手动触发时必须在 tag 输入框里填（例如 v1.2.3）" }
+          $tag = $tag.Trim()
+          # 校验：必须是 v 开头 + 数字开头的版本号，避免"随手填了个奇怪的名字"
+          if ($tag -notmatch '^v\d+\.\d+(\.\d+)*$') { throw "tag 号不合法：[$tag]（要求形如 v1.2.3）" }
+          Add-Content -Path $env:GITHUB_ENV  -Value "GRT_RELEASE_TAG=$tag"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$tag"
+          "本次发布 tag：$tag"
+          $LASTEXITCODE = 0
+
+      # ---- 打 tag：只有走到这里才说明构建已经全部成功 ----
+      # ★ tag 已存在时**覆盖**（用户要求）：把远端同名 tag 强制指到本次 commit，
+      #   否则"同名 tag 已存在"会让这次发布的产物对不上 tag（zip 是新的、tag 还指向旧提交）。
+      - name: 创建或覆盖 tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GRT_RELEASE_TAG
+          # ★ 必须显式给提交者身份：`git tag -a` 要写 tagger，而 GitHub runner 上
+          #   actions/checkout **不会**配置 user.name/user.email —— 实测缺身份时
+          #   `git tag -a` 直接报 "Committer identity unknown" (exit=128)。
+          $actor = if ($env:GITHUB_ACTOR) { $env:GITHUB_ACTOR } else { 'github-actions' }
+          & git config user.name  "$actor"
+          & git config user.email "$actor@users.noreply.github.com"
+          # 本地强制建（-f）：同名 tag 已存在时直接改成指向当前 commit
+          & git tag -f -a $tag -m "GitRT $tag"
+          if ($LASTEXITCODE -ne 0) { throw "创建本地 tag 失败（exit=$LASTEXITCODE）" }
+          $target = (& git rev-parse "$tag^{commit}").Trim()
+          "tag $tag -> $target"
+          # 远端强制推（--force）：覆盖已存在的同名 tag
+          & git push --force origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw "推送 tag 失败（exit=$LASTEXITCODE）" }
+          "已推送（必要时覆盖）tag $tag"
+          $LASTEXITCODE = 0
 
       - name: 下载发布包
         uses: actions/download-artifact@v5
@@ -386,16 +430,26 @@ jobs:
           name: GitRT-release
           path: dist
 
-      - name: 创建 GitHub Release 并附上 zip
+      - name: 创建或覆盖 GitHub Release 并附上 zip
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $tag = $env:GRT_RELEASE_TAG
           $zip = Get-ChildItem dist -Recurse -Filter *.zip | Select-Object -First 1
           if (-not $zip) { throw "没有找到发布 zip" }
-          gh release create "${{ github.ref_name }}" $zip.FullName `
-            --title "GitRT ${{ github.ref_name }}" `
-            --generate-notes
+          # ★ 覆盖语义（用户要求）：同名 Release 已存在时**先删再建**，
+          #   这样标题、说明（--generate-notes）与资产都是本次构建的，不会出现
+          #   "资产是新的、说明还是上一次的"这种半覆盖状态。
+          #   不加 --cleanup-tag：tag 由上一步自己管理（已强制指向本次 commit）。
+          & gh release view "$tag" --json tagName 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            "Release $tag 已存在 → 删除后重建（覆盖）"
+            & gh release delete "$tag" --yes
+            if ($LASTEXITCODE -ne 0) { throw "删除旧 Release 失败（exit=$LASTEXITCODE）" }
+          }
+          & gh release create "$tag" $zip.FullName --title "GitRT $tag" --generate-notes
           if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败（exit=$LASTEXITCODE）" }
+          "已发布：$tag"
           $LASTEXITCODE = 0

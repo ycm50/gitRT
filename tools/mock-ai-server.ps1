@@ -38,6 +38,8 @@ function Get-MockContent([string]$body) {
     if ($user -cmatch 'COMMITALL') { return '{"command":"commit.commit","params":{"msg":"AI 提交：由 mock 模型生成"},"flags":{},"explanation":"暂存并提交全部改动"}' }
     if ($user -cmatch 'FORCE')     { return '{"command":"sync.push","params":{},"flags":{"force-with-lease":"1"},"explanation":"强制推送（安全版）"}' }
     if ($user -cmatch 'MIXEDHARD') { return '{"command":"adv.reset","params":{"rev":"HEAD~1"},"flags":{"hard":"1"},"explanation":"硬重置一个提交"}' }
+    # GUI 内部命令：以前会被闸门一律拒掉，现在应当被接受（needsGui）
+    if ($user -cmatch 'INTERNAL')  { return '{"command":"commit.squash","params":{},"flags":{},"explanation":"打开合并提交窗口"}' }
     return '{"command":"sync.push","params":{},"flags":{"set-upstream":"1"},"explanation":"推送当前分支并设置上游"}'
 }
 
@@ -67,7 +69,7 @@ try {
         $promptHit = ''
         $mu = [regex]::Match($body, '"role"\s*:\s*"user"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"')
         if ($mu.Success) {
-            $promptHit = ([regex]::Match($mu.Groups[1].Value, '(NOTJSON|UNKNOWN|NONE|COMMITALL|FORCE|MIXEDHARD|UNAUTHORIZED)')).Value
+            $promptHit = ([regex]::Match($mu.Groups[1].Value, '(NOTJSON|UNKNOWN|NONE|COMMITALL|FORCE|MIXEDHARD|INTERNAL|UNAUTHORIZED)')).Value
         }
         Write-Log ("$($req.HttpMethod) $path bodyLen=$($body.Length) auth=$([bool]$auth) promptHit=$promptHit")
 

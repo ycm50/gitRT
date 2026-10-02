@@ -20,6 +20,10 @@ for job in d['jobs']:
         body = body.replace("${{ matrix.config == 'Debug' && 'debug' || 'release' }}", "release")
         body = body.replace("${{ matrix.config }}", "Release")
         body = body.replace("${{ github.ref_name }}", "v0.1.0.0")
+        # release job 的步骤会读这些上下文；本机重放时给一组等价的值
+        body = body.replace("${{ inputs.tag }}", "v0.1.0.0")
+        body = body.replace("${{ github.ref_type }}", "tag")
+        body = body.replace("${{ github.event_name }}", "workflow_dispatch")
         body = body.replace("${{ steps.msys2.outputs.msys2-location }}", "A:/msys64")
         slug = re.sub(r'[^A-Za-z0-9]+', '-', name).strip('-') or ('step%d' % i)
         fn = '%s/%s-%02d-%s.ps1' % (out, job, i, slug[:40])

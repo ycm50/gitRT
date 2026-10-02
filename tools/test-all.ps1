@@ -331,6 +331,11 @@ if ($SkipAi) {
         $r = Invoke-GitRT -AiPrompt 'UNKNOWN 请帮我做点危险的事' -WorkDir $repo
         Check "C2 拒绝命令表外的命令" ($r.Exit -eq 1 -and $r.Fields['plan_error'] -match '命令表') ("exit=$($r.Exit) plan_error=$($r.Fields['plan_error'])")
 
+        # C2b 内部命令（GUI 窗口类）：**不再被拒绝** → 方案通过（needs_gui=1），CLI 侧不执行
+        $r = Invoke-GitRT -AiPrompt 'INTERNAL 打开合并提交窗口' -WorkDir $repo
+        Check "C2b 内部命令被接受（needs_gui=1，非 plan_error）" (`$r.Fields['needs_gui'] -eq '1' -and -not $r.Fields['plan_error']`) "exit=$($r.Exit) needs_gui=$($r.Fields['needs_gui']) plan_error=$($r.Fields['plan_error'])"
+        Check "C2b CLI 侧如实报告未执行（exit=1）" ($r.Exit -eq 1 -and $r.Fields['executed'] -eq '0') "exit=$($r.Exit) executed=$($r.Fields['executed'])"
+
         # C3 模型认为无解
         $r = Invoke-GitRT -AiPrompt 'NONE 帮我订一张机票' -WorkDir $repo
         Check "C3 无合适命令 → exit=5" ($r.Exit -eq 5 -and $r.Fields['no_command'] -eq '1') ("exit=$($r.Exit)")

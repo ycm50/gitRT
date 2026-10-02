@@ -103,10 +103,16 @@
 #define IDS_FLAG_GENERATE_NOTES    3052   // 自动生成说明 --generate-notes
 #define IDS_FLAG_DRAFT             3053   // 草稿 --draft
 #define IDS_FLAG_PRERELEASE        3054   // 预发布 --prerelease
+// ---- 复选 + 可选值（ToggleValue）：勾上后可填参数的输入框提示
+#define IDS_FLAG_VALUE_HINT        3055   // 值输入框的灰色占位提示
 #define IDS_TERM_GIT_BASH          3040
 #define IDS_TERM_POWERSHELL        3041
 #define IDS_TERM_WT                3042
 #define IDS_TERM_CMD               3043
+// 「以管理员身份打开」：勾上后走 ShellExecuteW 的 runas 动词（触发 UAC）
+#define IDS_FLAG_TERMINAL_ADMIN    3056
+#define IDS_MSG_TERMINAL_UAC_CANCELLED 4120
+#define IDS_MSG_TERMINAL_ELEVATE_FAILED 4121
 
 // ------------------------------------------------------------ 参数提示文字
 #define IDS_PARAM_URL              3100
@@ -221,6 +227,8 @@
 #define IDS_SQ_FAILED           5324
 #define IDS_SQ_NEED2            5325
 #define IDS_SQ_NO_COMMITS       5326
+// 触到根提交（整仓覆盖）：合并后仓库会没有上游、推送需要 --force
+#define IDS_SQ_SEL_ROOT_NOTE    5336
 // ---- 查看类命令的"自动显示"预览（提交历史/查看差异/文件历史）
 #define IDS_LABEL_CONTENT       5327   // 内容（自动刷新）
 #define IDS_MSG_PREVIEW_FOOTER  5328

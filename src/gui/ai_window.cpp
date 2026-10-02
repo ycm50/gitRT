@@ -7,6 +7,7 @@
 //   3. 危险命令/危险选项需要用户在模态框中显式确认；
 //   4. 绝不把 AI 输出当命令行去执行。
 #include "gui.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 
 #include "ai_client.h"
 
@@ -116,6 +117,10 @@ std::wstring DescribePlan(const AiState* st, const PlanToCommandResult& r) {
     if (!r.built.notes.empty()) {
         for (const auto& n : r.built.notes) s += L"\r\n-- " + n;
     }
+    if (r.needsGui) {
+        s += L"\r\n\u5185\u90e8\u547d\u4ee4\uff1a\u70b9\u300c\u6267\u884c\u300d\u4f1a\u6253\u5f00\u5bf9\u5e94\u7a97\u53e3"
+             L"\uff08\u4e0d\u4f1a\u76f4\u63a5\u8dd1 git\uff09";
+    }
     s += L"\r\n\r\n(\u8017\u65f6 " + std::to_wstring(st->plan.elapsedMs) + L" ms, HTTP " +
          std::to_wstring(st->plan.httpStatus) + L")";
     return s;
@@ -187,15 +192,24 @@ void StartGenerate(HWND hwnd, AiState* st) {
                                         << " prompt=" << U8(text) << " sysBytes=" << ctx->sys.size());
 
     st->worker = std::thread([ctx]() {
-        auto* done = new AiDone();
+        auto done = std::make_unique<AiDone>();
         done->plan = GeneratePlan(ctx->cfg, ctx->sys, ctx->user);
-        if (!::PostMessageW(ctx->hwnd, WM_GRT_AI_DONE, 0, reinterpret_cast<LPARAM>(done))) delete done;
-        delete ctx;
+        // 先接管再移交：ctx 无论投递成败都要在这里回收
+        std::unique_ptr<Ctx> ctxGuard(ctx);
+        PostOwned(ctx->hwnd, WM_GRT_AI_DONE, std::move(done));
     });
 }
 
 void ExecutePlan(HWND hwnd, AiState* st) {
     if (!st->hasPlan || !st->spec) return;
+    // GUI 内部命令（ExecKind::Internal）：没有 argv，"执行"就是打开对应窗口。
+    // 与参数面板/菜单走**同一个分派**（ExecuteInternalCommand），不在这里另写一份去向表。
+    if (st->spec->exec == ExecKind::Internal) {
+        AppendResult(st, L"\u2500\u2500 " + Str(IDS_MSG_AI_EXECUTING) + L" \u2500\u2500\r\n" +
+                             st->built.display);
+        ExecuteInternalCommand(hwnd, *st->spec, {}, nullptr);
+        return;
+    }
     if (PlanIsDangerous(st)) {
         const std::wstring msg = std::wstring(L"\u5371\u9669\u64cd\u4f5c\u786e\u8ba4\r\n\r\n") +
                                  W(st->spec->key) + L"\r\n\r\n" + st->built.display + L"\r\n\r\n" +

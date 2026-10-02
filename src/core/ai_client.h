@@ -140,6 +140,11 @@ struct PlanToCommandResult {
     BuiltCommand       built;
     std::wstring       error;
     std::vector<std::wstring> warnings;   // 被忽略的未知选项等
+    // 命令是 GUI 内部命令（ExecKind::Internal）：**方案本身被接受**，但它没有 argv，
+    // 真正的"执行"= 打开对应窗口。调用方（AI 窗口）据此走 ExecuteInternalCommand 分派。
+    // 为什么不再直接拒绝：内部命令同样在命令表里、同样是"已有的命令"，
+    // 一律拒掉等于让 AI 对"打开合并提交窗口""看提交历史"这类意图无解。
+    bool               needsGui = false;
 };
 // 生效的系统提示词：配置里填了就用它，否则用内置默认
 std::string EffectiveSystemPrompt(const AiConfig& cfg, const TitleResolver& titleRes);

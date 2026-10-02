@@ -570,9 +570,9 @@ std::string BuildPlannerSystemPrompt(const TitleResolver& titleRes) {
          "\u4e0d\u8981\u5e26\u4efb\u4f55\u5199\u64cd\u4f5c\u9009\u9879\u3002\n";
     s += "4. \u9700\u8981\u5199\u64cd\u4f5c\uff08\u63d0\u4ea4/\u63a8\u9001/\u5408\u5e76/\u91cd\u7f6e\u7b49\uff09\u65f6\uff0c"
          "\u7528\u4e0b\u8868\u7684\u547d\u4ee4 key\uff08\u5b57\u6bb5 command\uff09\uff0c\u4e0d\u8981\u81ea\u5df1\u7f16 git \u547d\u4ee4\u884c\u3002\n";
-    s += "5. **\u4e0d\u8981**\u9009\u9700\u8981\u56fe\u5f62\u754c\u9762\u4ea4\u4e92\u7684\u5185\u90e8\u547d\u4ee4"
-         "\uff08key \u4ee5 app. / commit.squash / inspect.status \u7b49\u9700\u7a97\u53e3\u7684\uff09\uff1b"
-         "\u5b83\u4eec\u4e0d\u4f1a\u88ab\u81ea\u52a8\u6267\u884c\u3002\n";
+    s += "5. \u5185\u90e8\u547d\u4ee4\uff08key \u4ee5 app. / commit.squash / inspect.status \u7b49"
+         "\u9700\u7a97\u53e3\u7684\uff09**\u4e5f\u53ef\u4ee5\u9009**\uff1a\u65b9\u6848\u88ab\u63a5\u53d7\uff0c"
+         "\u6267\u884c\u65f6\u6253\u5f00\u5bf9\u5e94\u7a97\u53e3\uff08\u4e0d\u751f\u6210 git \u547d\u4ee4\u884c\uff09\u3002\n";
     s += "6. \u82e5\u6ca1\u6709\u547d\u4ee4\u80fd\u5b8c\u6210\u7528\u6237\u610f\u56fe\uff0c"
          "\u8fd4\u56de {\"command\":\"none\",\"explanation\":\"\u539f\u56e0\"}\u3002\n";
     s += "7. \u5371\u9669\u9009\u9879\uff08\u6807\u3010\u5371\u9669\u3011\uff09\u53ea\u5728\u7528\u6237"
@@ -874,10 +874,17 @@ PlanToCommandResult PlanToCommand(const AiPlan& plan, const std::wstring& repoRo
                     W(plan.commandKey) + L"\uff08\u5df2\u62d2\u7edd\u6267\u884c\uff09";
         return res;
     }
+    // GUI 内部命令（ExecKind::Internal）：**不再拒绝**。它们是命令表里的既有命令，
+    // 只是没有 argv——"执行"= 打开对应窗口。方案照样通过校验，调用方看 needsGui 走分派。
     if (spec->exec == ExecKind::Internal) {
-        res.error = L"\u547d\u4ee4 " + W(spec->key) +
-                    L" \u9700\u8981\u56fe\u5f62\u754c\u9762\u4ea4\u4e92\uff0c\u8bf7\u5728\u5de6\u4fa7"
-                    L"\u547d\u4ee4\u5217\u8868\u4e2d\u624b\u52a8\u6267\u884c";
+        res.ok = true;
+        res.spec = spec;
+        res.needsGui = true;
+        res.built.cwd = repoRoot;
+        res.built.display = L"\uff08\u5185\u90e8\u547d\u4ee4\uff1a" + W(spec->key) +
+                            L" \u2014\u2014 \u6267\u884c\u65f6\u6253\u5f00\u5bf9\u5e94\u7a97\u53e3\uff0c\u4e0d\u751f\u6210 git \u547d\u4ee4\u884c\uff09";
+        if (spec->requiresRepo && repoRoot.empty())
+            res.warnings.push_back(L"\u8be5\u547d\u4ee4\u9700\u8981\u5148\u9009\u62e9\u4ed3\u5e93");
         return res;
     }
     if (spec->requiresRepo && repoRoot.empty()) {

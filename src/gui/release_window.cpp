@@ -14,6 +14,7 @@
 //   ★ 附件多选：GetOpenFileNameW(OFN_ALLOWMULTISELECT)（comdlg32）。
 // ---------------------------------------------------------------------------
 #include "gui.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 
 #include <commctrl.h>
 // ★ 本工程定义了 WIN32_LEAN_AND_MEAN → windows.h 不带 commdlg.h，
@@ -414,18 +415,15 @@ void RunPlan(HWND hwnd, RelState* st, const ReleasePlan& plan) {
         const ReleaseResult r = ApplyReleasePlan(
             repoRoot, plan,
             [hwnd](const std::wstring& cmd) {
-                auto* s = new std::string(U8(cmd) + "\r\n");
-                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+                PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(U8(cmd) + "\r\n"));
             },
             [hwnd](const std::string& out) {
                 if (out.empty()) return;
-                auto* s = new std::string(out);
-                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+                PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(out));
             });
         const std::wstring reason = r.error.empty() ? std::wstring(L"未知原因") : r.error;
         const std::wstring line = r.ok ? std::wstring(L"完成：发布已创建") : ReplaceAll(failTpl, L"{msg}", reason);
-        auto* s = new std::string(U8(line) + "\r\n");
-        if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+        PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(U8(line) + "\r\n"));
         ::PostMessageW(hwnd, WM_GRT_REL_DONE, static_cast<WPARAM>(r.ok ? 0 : kRelFail), 0);
     }).detach();
 }

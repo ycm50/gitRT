@@ -20,7 +20,7 @@ cmake --preset ucrt64-debug   -DCMAKE_MAKE_PROGRAM=A:/msys64/ucrt64/bin/ninja.ex
 cmake --build build/debug
 ```
 
-## 2. 提交前必须跑的四件事
+## 2. 提交前必须跑的几件事
 
 ```powershell
 # ① 告警门禁：CI 就是这么跑的，本地提交前也建议开一次
@@ -50,9 +50,38 @@ pwsh -File tools/test-all.ps1 -Exe build/debug/src/gui/GitRT.exe -SkipShell
 | 需要**真 git 仓库**的命令行端到端 | `tools/test-*.ps1` |
 | 需要**窗口 / 图标 / 参数面板 / 真仓库**的 GUI 行为 | `GitRT.exe --self-test` 里的 `RunSelfTest()` |
 | COM 菜单 / 清单 / 导出表 | `GitRT.ShellProbe.exe --self-test` / `--dump` |
+| **需要外部程序在场**的路径（如"装了 gh"的发布流程） | 加一个**桩** + 环境变量注入（例：`GITRT_GH_EXE` → `tools/fake-gh.bat`），在 `tools/test-*.ps1` 里跑。**不要**因为"本机没装 X"就 `[SKIP]` —— 那等于这段代码从没被测过 |
 
 往 `main.cpp` 的 `--self-test` 里塞纯函数断言是**反模式**：它需要一个真实窗口句柄才能跑
-（这正是把 37 条断言搬进 `src/tests/` 的原因）。
+（这正是把纯函数断言搬进 `src/tests/` 的原因；现在那里有 47 条）。
+
+## 3b. GUI 里把对象交给窗口消息：必须用 PostOwned
+
+`src/gui` 里有大量"工作线程算好一个对象 → `PostMessageW` 交给 UI 线程 handler 接管"的写法。
+Win32 消息是**异步**的：目标窗口可能已经销毁，`PostMessageW` 返回 `FALSE`，对象就没人接管了。
+项目里曾因此漏了 25 处泄漏（是当时的 `g++ -fanalyzer` 把它们找出来的）。
+
+**规矩（两条都要做到）：**
+
+```cpp
+// 投递方：用 PostOwned（src/gui/post_owned.h）—— 失败就地回收，成功才 release
+PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(out));
+
+// 接收方：一律 unique_ptr 接管，**包括窗口正在销毁时要丢弃的分支**
+case WM_GRT_TASK_LOG: {
+    std::unique_ptr<std::string> line(reinterpret_cast<std::string*>(lp));
+    if (st && line) AppendLine(st, ...);
+    return 0;   // 无论用不用，line 出作用域即回收
+}
+```
+
+**不要**写成 `auto* p = new T(...); if (!::PostMessageW(...)) delete p;` —— 漏掉那个
+`if` 就是必漏。`unique_ptr` + `release()` 是唯一在**所有**路径（含早退）都保证回收、
+且编译器能替你把关的写法（当初就是靠这条把 25 处真泄漏收敛成 0 的）。
+
+> 注：仓库里已移除 `g++ -fanalyzer` 静态分析（CI job 与 `GRT_ANALYZER` 选项都不在了），
+> 所以**没有自动检查会替你抓这类泄漏了** —— 这条规矩现在靠 review 与自觉。要临时补一次
+> 全量分析，加 `-fanalyzer` 编译即可（不需要其它改动，成因见 `src/gui/post_owned.h` 头注释）。
 
 ## 4. 风格与行尾
 

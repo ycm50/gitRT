@@ -15,9 +15,15 @@ constexpr FlagSpec kPullFlags[] = {
 
 // sync.push
 constexpr FlagSpec kPushFlags[] = {
-    {"set-upstream",     "--set-upstream",     FlagKind::Toggle,   nullptr, IDS_FLAG_SET_UPSTREAM, true,  false},
+    // set-upstream 默认**不勾**（用户明确要求：推送时不预选"设置上游"）。
+    // 需要它时在参数面板里勾一下，或直接给首次推送的实例用 --set-upstream。
+    {"set-upstream",     "--set-upstream",     FlagKind::Toggle,   nullptr, IDS_FLAG_SET_UPSTREAM, false, false},
     {"tags",             "--tags",             FlagKind::Toggle,   nullptr, IDS_FLAG_TAGS,         false, false},
-    {"force-with-lease", "--force-with-lease", FlagKind::Dangerous, nullptr, IDS_FLAG_FORCE_WITH_LEASE, false, true},
+    // --force-with-lease 接受**可选值**（git：--force-with-lease[=<refname>[:<expect>]]）：
+    //   勾上但不填 → "--force-with-lease"（用默认的远端跟踪引用）
+    //   勾上并填了 → "--force-with-lease=<refname>[:<expect>]"
+    //   → ToggleValue：勾选框与输入框同一行，勾了就有地方填参数
+    {"force-with-lease", "--force-with-lease={v}", FlagKind::ToggleValue, nullptr, IDS_FLAG_FORCE_WITH_LEASE, false, true},
     {"dry-run",          "--dry-run",          FlagKind::Toggle,   nullptr, IDS_FLAG_DRY_RUN,      false, false},
 };
 
@@ -155,11 +161,14 @@ constexpr FlagSpec kCloneFlags[] = {
 };
 
 // app.terminal：纯 UI 单选（不进 argv），由 GUI 读取后启动对应终端
+// 另有一个**跨选项**的复选「以管理员身份打开」：它不在 terminal 单选组里，
+// 勾上时 GUI 用 ShellExecuteW 的 "runas" 动词启动 → 由系统弹 UAC 提权。
 constexpr FlagSpec kTerminalFlags[] = {
     {"git-bash",    nullptr, FlagKind::Radio, "terminal", IDS_TERM_GIT_BASH,   false, false},
     {"powershell",  nullptr, FlagKind::Radio, "terminal", IDS_TERM_POWERSHELL, false, false},
     {"windows-terminal", nullptr, FlagKind::Radio, "terminal", IDS_TERM_WT,   true,  false},
     {"cmd",         nullptr, FlagKind::Radio, "terminal", IDS_TERM_CMD,        false, false},
+    {"admin",       nullptr, FlagKind::Toggle, nullptr,    IDS_FLAG_TERMINAL_ADMIN, false, false},
 };
 
 constexpr CommandSpec C(CommandId id, const char* key, GroupId g, uint16_t title, SelMask sel,
@@ -181,12 +190,13 @@ const CommandSpec kCommands[] = {
     C(1002, "repo.clone", GroupId::Repo, IDS_CMD_REPO_CLONE,
       kSelDir | kSelBg, false, Danger::Safe, ParamKind::Url, ParamSource::None, "url",
       ExecKind::CliStream, kCloneFlags, 6, "git clone {flags} {url}"),
-    C(1003, "app.console", GroupId::Repo, IDS_CMD_APP_CONSOLE,
-      kSelAny, false, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
+    // 状态面板放在「仓库」分组下（它描述的就是"这个仓库现在什么样"）
+    C(1405, "inspect.status", GroupId::Repo, IDS_CMD_INSPECT_STATUS,
+      kSelAny, true, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
       ExecKind::Internal, nullptr, 0, nullptr),
     C(1004, "app.terminal", GroupId::Repo, IDS_CMD_APP_TERMINAL,
       kSelDir | kSelBg, false, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
-      ExecKind::Internal, kTerminalFlags, 4, nullptr),
+      ExecKind::Internal, kTerminalFlags, 5, nullptr),
 
     // ------------------------------------------------------------ 提交
     C(1101, "commit.stage", GroupId::Commit, IDS_CMD_COMMIT_STAGE,
@@ -278,7 +288,8 @@ const CommandSpec kCommands[] = {
       ExecKind::CliPanel, kReleaseCreateFlags, 5, "gh release create {tag} {flags}"),
 
     // ------------------------------------------------------------ 查看
-    C(1401, "inspect.log", GroupId::Inspect, IDS_CMD_INSPECT_LOG,
+    // 提交历史放在「提交」分组下（它读的是提交，不是"当前工作区"）
+    C(1401, "inspect.log", GroupId::Commit, IDS_CMD_INSPECT_LOG,
       kSelDir | kSelBg, true, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
       ExecKind::Internal, nullptr, 0, nullptr),
     C(1402, "inspect.diff", GroupId::Inspect, IDS_CMD_INSPECT_DIFF,
@@ -286,9 +297,6 @@ const CommandSpec kCommands[] = {
       ExecKind::Internal, kDiffFlags, 3, nullptr),
     C(1403, "inspect.filelog", GroupId::Inspect, IDS_CMD_INSPECT_FILELOG,
       kSelFile, true, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
-      ExecKind::Internal, nullptr, 0, nullptr),
-    C(1405, "inspect.status", GroupId::Inspect, IDS_CMD_INSPECT_STATUS,
-      kSelAny, true, Danger::Safe, ParamKind::None, ParamSource::None, nullptr,
       ExecKind::Internal, nullptr, 0, nullptr),
 
     // ------------------------------------------------------------ 储藏

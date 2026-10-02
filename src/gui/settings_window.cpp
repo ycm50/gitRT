@@ -9,6 +9,7 @@
 // 代价：任何能读该目录的进程都能读到 Key —— 界面里如实告知（IDS_AI_SET_HINT_KEY）。
 #include "gui.h"
 #include "config.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 
 #include "ai_client.h"
 #include "json_util.h"
@@ -114,10 +115,8 @@ void StartModelFetch(HWND hwnd, SetState* st) {
     const AiConfig cfg = st->cfg;
     if (st->worker.joinable()) st->worker.join();
     st->worker = std::thread([hwnd, cfg] {
-        auto* res = new ModelListResult(FetchModelList(cfg));
-        // 窗口已销毁时 PostMessageW 失败 → 自己回收，避免泄漏
-        if (!::PostMessageW(hwnd, WM_GRT_AI_MODELS_DONE, 0, reinterpret_cast<LPARAM>(res)))
-            delete res;
+        // 窗口已销毁时投递会失败 → PostOwned 就地回收，避免泄漏
+        PostOwned(hwnd, WM_GRT_AI_MODELS_DONE, std::make_unique<ModelListResult>(FetchModelList(cfg)));
     });
 }
 
@@ -203,8 +202,9 @@ void TestConnection(SetState* st, HWND hwnd) {
         if (!key.empty()) headers.push_back({L"Authorization", L"Bearer " + key});
         const auto a = std::make_unique<HttpResponse>(HttpPostJson(url, headers, body, timeout));
         const auto started = a->status;   // 结果整体回传（status/body/error）
-        auto* payload = new std::pair<int, std::string>{started, a->error.empty() ? a->body : a->error};
-        if (!::PostMessageW(hwnd, WM_GRT_AI_TEST_DONE, 0, reinterpret_cast<LPARAM>(payload))) delete payload;
+        PostOwned(hwnd, WM_GRT_AI_TEST_DONE,
+                  std::make_unique<std::pair<int, std::string>>(
+                      started, a->error.empty() ? a->body : a->error));
     });
 }
 

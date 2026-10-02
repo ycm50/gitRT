@@ -1,10 +1,30 @@
 # ---------------------------------------------------------------------------
-# 复合动作：安装并定位 MSYS2 UCRT64 工具链（g++ / windres / ninja / objdump）
+# 复合动作：安装并定位 MSYS2 UCRT64 工具链（g++ / windres / ninja / objdump / ccache）
 #
 # 为什么抽成 action：
 #   · 安装包清单原先在多个 job 里各写一份，"改一处要同步另一处"——这种重复迟早会漂；
 #   · 「别猜 MSYS2 装在哪」的候选路径逻辑有 60 行，原先在 build / package 两个 job 里**逐字重复**。
 #   现在两件事都只有这一份。
+#
+# ★ 三级策略（A + B 结合）——起因见下：
+#   实测失败：`msys2/setup-msys2@v2` 默认的 release:true 每次都要从 GitHub Releases 下载
+#   41MB 的 `msys2-base-x86_64-<日期>.sfx.exe`，CDN 时常回 504，而这一步一挂整个 job 就废了
+#   （"Error: Unexpected HTTP response: 504"，同一提交同一分钟里 Debug 成、Release 败，纯随机）。
+#   它内部已经重试 3 次（间隔 10–20s）仍会失败，所以外层再垫一层兜底：
+#
+#     ① **A：复用 runner 镜像自带的 MSYS2**（`release: false`）—— 完全不下载安装包，最快。
+#        windows-2022 镜像预装了 C:\msys64（官方 Readme："MSYS2 is pre-installed on image"）。
+#        这一步**允许失败**（continue-on-error）：镜像升级、目录缺失、pacman 库过期导致包 404……
+#        任何原因失败都不算错，直接进入 ②。
+#     ② **B：回退到全新下载安装**（`release: true`，版本与 SHA256 由 action 固定）——
+#        这是"已知能work"的那条路，只是可能撞 504。
+#     ③ **B 的重试**：再给一次机会，且**换一个安装目录**（`location` 不同）——
+#        因为 setup-msys2 在目标目录已存在时会直接报
+#        "Trying to install MSYS2 to ... but that already exists, cannot continue."
+#        没有这一步，第二次重试会立刻失败在"目录已存在"上，而不是真的重试下载。
+#
+# 取舍（必须知道）：走 ① 时用的是**镜像自带的** MSYS2 版本，走 ② 时是 **2026-09-27 固定版** ——
+#   两者编译器版本可能不同。想要严格可复现，可以把 ① 去掉（只保留 ②③）；想要快与稳，保留现状。
 #
 # 前置条件：调用方必须先 actions/checkout（本地 action 要靠工作区里的文件）。
 #
@@ -13,7 +33,7 @@
 #   · 该目录写入 $GITHUB_PATH（objdump 也要在 PATH 上，构建期的导出表校验依赖它）
 # ---------------------------------------------------------------------------
 name: 安装并定位 UCRT64 工具链
-description: setup-msys2 + 找到含 g++.exe 与 ninja.exe 的 ucrt64/bin，导出 UCRT64_BIN 并加进 PATH
+description: 复用 runner 自带 MSYS2（失败则回退到下载安装 + 重试），再定位含 g++/ninja 的 ucrt64/bin
 
 outputs:
   ucrt64-bin:
@@ -23,29 +43,88 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: 安装 MSYS2 UCRT64 工具链
-      id: msys2
+    # ① 快路径：复用 runner 镜像预装的 C:\msys64，不下载安装包 → 从根上绕开 504
+    - name: 复用 runner 自带 MSYS2（不下载安装包）
+      id: msys2_preinstalled
+      if: ${{ env.GRT_MSYS2_FORCE_FRESH != '1' }}
+      continue-on-error: true
       uses: msys2/setup-msys2@v2
       with:
         msystem: UCRT64
+        release: false
+        # 不走 -Syuu：这一步是"快路径"，库若过期让 pacman 自己报错 → 由下面的回退接手
         update: false
         install: >-
           mingw-w64-ucrt-x86_64-gcc
           mingw-w64-ucrt-x86_64-binutils
           mingw-w64-ucrt-x86_64-cmake
           mingw-w64-ucrt-x86_64-ninja
+          mingw-w64-ucrt-x86_64-ccache
+
+    # ② 回退：全新下载安装（版本与 SHA256 由 setup-msys2 固定）。
+    #    只有 ① 没成功才会走到这里；① 成功时本步 skipped。
+    #    ★ 必须显式写 always()：GitHub 的 if 里**隐含 success()**，不写的话
+    #      "① 失败 → 本步"根本进不来（这是最容易写错的一处）。
+    #      用 always() + outcome 判断，而不是 failure()：① 带 continue-on-error，
+    #      它在 steps 上下文里的形态容易让人算错，直接比 outcome 最稳。
+    - name: 下载安装 MSYS2（回退 1/2）
+      id: msys2_fresh
+      if: ${{ always() && (env.GRT_MSYS2_FORCE_FRESH == '1' || steps.msys2_preinstalled.outcome != 'success') }}
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        release: true
+        update: false
+        # 独立目录：避免上一次失败留下的半成品让本步报"already exists"
+        location: ${{ runner.temp }}/msys2-fresh1
+        install: >-
+          mingw-w64-ucrt-x86_64-gcc
+          mingw-w64-ucrt-x86_64-binutils
+          mingw-w64-ucrt-x86_64-cmake
+          mingw-w64-ucrt-x86_64-ninja
+          mingw-w64-ucrt-x86_64-ccache
+
+    # ③ 下载的重试：仍然换一个空目录，这样才是真的"重新下载"，而不是撞在"目录已存在"上
+    - name: 下载安装 MSYS2（回退 2/2）
+      id: msys2_fresh_retry
+      # 只要前面没有**任何一级成功**就再试一次。
+      # 注：force-fresh 模式下 ① 的 outcome 是 'skipped'（不是 'success'），所以这条同样成立。
+      if: |
+        always() &&
+        steps.msys2_preinstalled.outcome != 'success' &&
+        steps.msys2_fresh.outcome != 'success'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        release: true
+        update: false
+        location: ${{ runner.temp }}/msys2-fresh2
+        install: >-
+          mingw-w64-ucrt-x86_64-gcc
+          mingw-w64-ucrt-x86_64-binutils
+          mingw-w64-ucrt-x86_64-cmake
+          mingw-w64-ucrt-x86_64-ninja
+          mingw-w64-ucrt-x86_64-ccache
 
     - name: 定位 UCRT64 工具链
       id: locate
       shell: pwsh
       env:
-        MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        # 三级各自成功时都能给出自己的安装位置；没走到的那些是空串
+        MSYS2_LOCATION_PRE: ${{ steps.msys2_preinstalled.outputs.msys2-location }}
+        MSYS2_LOCATION_B: ${{ steps.msys2_fresh.outputs.msys2-location }}
+        MSYS2_LOCATION_C: ${{ steps.msys2_fresh_retry.outputs.msys2-location }}
       run: |
         $ErrorActionPreference = 'Stop'
         $cands = New-Object System.Collections.Generic.List[string]
         # ★ 先信 setup-msys2 自己的输出（它默认**不**把工具加进 PATH，别猜盘符）
-        if ($env:MSYS2_LOCATION) { $cands.Add("$env:MSYS2_LOCATION/ucrt64/bin") }
-        foreach ($root in @($env:MSYS2_ROOT, $env:MSYS2_ROOT_HINT, "$env:RUNNER_TEMP/msys64", 'C:/msys64', 'D:/msys64')) {
+        foreach ($loc in @($env:MSYS2_LOCATION_PRE, $env:MSYS2_LOCATION_B, $env:MSYS2_LOCATION_C)) {
+          if (-not [string]::IsNullOrWhiteSpace($loc)) { $cands.Add("$loc/ucrt64/bin") }
+        }
+        # 兜底：按已知位置与"带 msys 的目录"再找一遍
+        foreach ($root in @($env:MSYS2_ROOT, $env:MSYS2_ROOT_HINT, 'C:/msys64', 'D:/msys64',
+                             "$env:RUNNER_TEMP/msys2-fresh1", "$env:RUNNER_TEMP/msys2-fresh2",
+                             "$env:RUNNER_TEMP/msys64")) {
           if ([string]::IsNullOrWhiteSpace($root)) { continue }
           $cands.Add("$root/ucrt64/bin")
         }
@@ -77,6 +156,19 @@ runs:
         Add-Content -Path $env:GITHUB_PATH -Value $bin
         Add-Content -Path $env:GITHUB_OUTPUT -Value "bin=$bin"
         "UCRT64_BIN=$bin"
+        # 用的是哪条路（①/②/③）—— 本步打出来，排查"编译器版本怎么变了"时有据可查
+        if (-not [string]::IsNullOrWhiteSpace($env:MSYS2_LOCATION_PRE)) { 'path: ① runner 自带的 MSYS2（未下载）' }
+        elseif (-not [string]::IsNullOrWhiteSpace($env:MSYS2_LOCATION_B)) { 'path: ② 全新下载（回退 1/2）' }
+        elseif (-not [string]::IsNullOrWhiteSpace($env:MSYS2_LOCATION_C)) { 'path: ③ 全新下载（回退 2/2 重试）' }
+        # ccache：编译缓存（必须与编译器**同一套工具链**，所以只认这个目录里的那份）。
+        # 用它当 CMAKE_*_COMPILER_LAUNCHER 时，缓存命中就跳过整次编译 —— 这是 CI 提速的主要来源。
+        $cc = Join-Path $bin 'ccache.exe'
+        if (Test-Path $cc) {
+          $ver = & $cc --version
+          "ccache: $($ver[0])"
+        } else {
+          "::warning::ccache 没装上（$cc 不存在），编译缓存不可用"
+        }
         $gxx = & (Join-Path $bin 'g++.exe') --version
         "g++: $($gxx[0])"
         $LASTEXITCODE = 0

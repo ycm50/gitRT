@@ -23,14 +23,13 @@
 namespace grt {
 
 // --------------------------------------------------------------------- 错误
-struct HrError {
-    HRESULT     hr = E_FAIL;
-    std::string where;
-};
+// 说明：这里曾有一个 inline ThrowIfFailed()（抛 HrError），但全仓库 0 个调用点，
+//       已于清理时删除。它不只是死代码——它还让**每一个**包含本头文件的 TU
+//       在 -fno-exceptions 下编译失败（"exception handling disabled"），
+//       堵住了唯一能让 GCC 静态分析器不再假设 Win32 API 抛异常的路子。
+//       需要"检查 HRESULT 失败"时，本项目一律走返回值 / 显式 error 字段，
+//       不抛异常（COM 边界那层由 src/shell/com_guard.h 兜底）。
 std::string HrToString(HRESULT hr);
-inline void ThrowIfFailed(HRESULT hr, const char* where = "") {
-    if (FAILED(hr)) throw HrError{hr, where};
-}
 
 // --------------------------------------------------------------- RAII 句柄
 struct HandleDeleter {

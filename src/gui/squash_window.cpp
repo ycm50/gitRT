@@ -8,6 +8,7 @@
 //         （UI 只做即时提示，真正的判定与拒绝理由由 BuildSquashPlan 给出）
 // ---------------------------------------------------------------------------
 #include "gui.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 
 #include <commctrl.h>
 
@@ -87,6 +88,10 @@ void SetStatus(SqState* st) {
             text = Str(IDS_SQ_SEL_GAP);
         } else {
             text = Str(IDS_SQ_SEL_OK);
+            // 勾到根提交（列表最后一行）：会整仓覆盖 → 必须提前说清楚"之后没有上游"
+            if (sel.back() + 1 >= st->commits.size()) {
+                text += L"\r\n" + Str(IDS_SQ_SEL_ROOT_NOTE);
+            }
         }
         const std::wstring nStr = std::to_wstring(n);
         if (const size_t pos = text.find(L"{n}"); pos != std::wstring::npos) text.replace(pos, 3, nStr);
@@ -188,6 +193,8 @@ std::wstring ConfirmBody(const SquashPlan& plan) {
         cmds += L"> " + c;
     }
     if (const size_t p = body.find(L"{cmds}"); p != std::wstring::npos) body.replace(p, 6, cmds);
+    // 触到根提交：确认框里再加一段"后果说明"（不是小改动，必须让人看见）
+    if (plan.touchesRoot) body += L"\r\n\r\n" + Str(IDS_SQ_SEL_ROOT_NOTE);
     return ToCrlf(body);
 }
 
@@ -223,17 +230,14 @@ void StartMerge(HWND hwnd, SqState* st) {
         SquashResult r = ApplySquash(
             gitExe, repoRoot, plan,
             [hwnd](const std::wstring& cmd) {
-                auto* s = new std::string(U8(L"> " + cmd) + "\r\n");
-                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+                PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(U8(L"> " + cmd) + "\r\n"));
             },
             [hwnd](const std::string& out) {
                 if (out.empty()) return;
-                auto* s = new std::string(out);
-                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+                PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(out));
             });
-        // 窗口已销毁时 PostMessageW 失败 → 自己回收结果对象，避免泄漏
-        auto* done = new SquashResult(r);
-        if (!::PostMessageW(hwnd, WM_GRT_SQ_DONE, 0, reinterpret_cast<LPARAM>(done))) delete done;
+        // 窗口已销毁时投递会失败 → PostOwned 就地回收，避免泄漏
+        PostOwned(hwnd, WM_GRT_SQ_DONE, std::make_unique<SquashResult>(r));
     }).detach();
 }
 

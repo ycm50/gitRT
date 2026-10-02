@@ -8,6 +8,7 @@
 //   执行类操作一律丢到工作线程（core 里真的会跑 git），线程里只做 core 调用 + PostMessage。
 // ---------------------------------------------------------------------------
 #include "gui.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 
 #include <commctrl.h>
 
@@ -253,8 +254,7 @@ void StartFetch(HWND hwnd, RmState* st) {
     std::thread([hwnd, gitExe, repoRoot, done, failTpl]() {
         const std::wstring err = FetchRemote(gitExe, repoRoot);
         const std::wstring line = err.empty() ? done : ReplaceAll(failTpl, L"{msg}", err);
-        auto* s = new std::string(U8(line) + "\r\n");
-        if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+        PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(U8(line) + "\r\n"));
         ::PostMessageW(hwnd, WM_GRT_RM_DONE,
                        static_cast<WPARAM>(RMOP_FETCH) | (err.empty() ? 0 : kRmFail), 0);
     }).detach();
@@ -276,20 +276,17 @@ void RunPlan(HWND hwnd, RmState* st, const RestorePlan& plan, int op,
         trackUpstream.empty() ? std::wstring() : L"> git branch --set-upstream-to=" + trackUpstream;
     std::thread([hwnd, plan, op, trackUpstream, gitExe, repoRoot, done, failTpl, upLine]() {
         auto postLine = [hwnd](const std::wstring& line) {
-            auto* s = new std::string(U8(line) + "\r\n");
-            if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+            PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(U8(line) + "\r\n"));
         };
         // ApplyRestore 的 onCommand 已带 "> " 前缀，日志里不能再加一次
         RestoreResult r = ApplyRestore(
             gitExe, repoRoot, plan,
             [hwnd](const std::wstring& cmd) {
-                auto* s = new std::string(U8(cmd) + "\r\n");
-                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+                PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(U8(cmd) + "\r\n"));
             },
             [hwnd](const std::string& out) {
                 if (out.empty()) return;
-                auto* s = new std::string(out);
-                if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+                PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(out));
             });
         std::wstring err = r.error;
         if (r.ok && !trackUpstream.empty()) {
@@ -369,8 +366,7 @@ void StartSetUpstream(HWND hwnd, RmState* st) {
     std::thread([hwnd, gitExe, repoRoot, name, done, failTpl]() {
         const std::wstring err = SetUpstream(gitExe, repoRoot, name);
         const std::wstring line = err.empty() ? done : ReplaceAll(failTpl, L"{msg}", err);
-        auto* s = new std::string(U8(line) + "\r\n");
-        if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+        PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(U8(line) + "\r\n"));
         ::PostMessageW(hwnd, WM_GRT_RM_DONE,
                        static_cast<WPARAM>(RMOP_UPSTREAM) | (err.empty() ? 0 : kRmFail), 0);
     }).detach();
@@ -393,8 +389,7 @@ void StartRemoteOp(HWND hwnd, RmState* st, bool add) {
         const std::wstring err = add ? AddRemote(gitExe, repoRoot, name, url)
                                      : SetRemoteUrl(gitExe, repoRoot, name, url);
         const std::wstring line = err.empty() ? okText : ReplaceAll(failTpl, L"{msg}", err);
-        auto* s = new std::string(U8(line) + "\r\n");
-        if (!::PostMessageW(hwnd, WM_GRT_TASK_LOG, 0, reinterpret_cast<LPARAM>(s))) delete s;
+        PostOwned(hwnd, WM_GRT_TASK_LOG, std::make_unique<std::string>(U8(line) + "\r\n"));
         ::PostMessageW(hwnd, WM_GRT_RM_DONE, static_cast<WPARAM>(op) | (err.empty() ? 0 : kRmFail), 0);
     }).detach();
 }

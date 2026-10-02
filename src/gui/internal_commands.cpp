@@ -26,44 +26,71 @@ std::wstring RunGitOut(const std::vector<std::wstring>& argv, uint32_t timeoutMs
     return out;
 }
 
+// 启动终端的唯一出口：elevated 决定用 "runas"（触发 UAC）还是 "open"。
+// 返回是否已成功启动；elevated 且用户点了"否"时 *cancelled 置 true（调用方据此静默返回，不报错）。
+bool ShellLaunch(HWND owner, const std::wstring& file, const std::wstring& args, const std::wstring& dir,
+                 bool elevated, bool* cancelled) {
+    if (cancelled) *cancelled = false;
+    const HINSTANCE hi = ::ShellExecuteW(owner, elevated ? L"runas" : L"open", file.c_str(),
+                                         args.empty() ? nullptr : args.c_str(),
+                                         dir.empty() ? nullptr : dir.c_str(), SW_SHOWNORMAL);
+    const INT_PTR code = reinterpret_cast<INT_PTR>(hi);
+    if (code > 32) return true;
+    // 用户在 UAC 上点"否"的表现有两种，都要认：ShellExecute 返回 SE_ERR_ACCESSDENIED(5)，
+    // 或底层 ShellExecuteEx 的 ERROR_CANCELLED(1223) 透到 GetLastError。
+    // 这是**正常的用户选择**，不是故障 → 让调用方静默收手，不要退到下一个终端（那等于绕过他）。
+    if (cancelled) {
+        const DWORD lastErr = ::GetLastError();
+        if (code == SE_ERR_ACCESSDENIED || lastErr == ERROR_CANCELLED) *cancelled = true;
+    }
+    GRT_LOGW("gui", "ShellExecute " << (elevated ? "runas" : "open") << " 失败 file=" << U8(file)
+                                    << " code=" << code << " err=" << ::GetLastError());
+    return false;
+}
+
 // 依次尝试 Windows Terminal → PowerShell → cmd（git-bash 见下）
+// elevated = 勾了「以管理员身份打开」：每一步都用 runas 启动，由系统弹 UAC。
 void LaunchTerminal(HWND owner, const std::map<std::string, std::wstring>* flags) {
     std::wstring dir = App().repoRoot.empty() ? GetModuleDir() : App().repoRoot;
     std::string choice = "windows-terminal";
+    bool elevated = false;
     if (flags) {
         for (const auto& kv : *flags) {
             if (kv.first == "git-bash" && kv.second == L"1") choice = "git-bash";
             else if (kv.first == "powershell" && kv.second == L"1") choice = "powershell";
             else if (kv.first == "cmd" && kv.second == L"1") choice = "cmd";
             else if (kv.first == "windows-terminal" && kv.second == L"1") choice = "windows-terminal";
+            else if (kv.first == "admin" && kv.second == L"1") elevated = true;
         }
     }
     auto exists = [](const std::wstring& p) { return PathExists(p); };
+    bool cancelled = false;
+    auto tryLaunch = [&](const std::wstring& exe, const std::wstring& args) -> bool {
+        if (ShellLaunch(owner, exe, args, dir, elevated, &cancelled)) return true;
+        return cancelled;   // 用户拒绝了 UAC：**不要再退到下一个终端**（那等于绕过他的选择）
+    };
 
     if (choice == "git-bash") {
         const std::wstring root = GitRootOf(App().gitExe);
         const std::wstring gitBash = root + L"\\git-bash.exe";
         if (exists(gitBash)) {
-            const std::wstring args = L"--cd=\"" + dir + L"\"";
-            if (reinterpret_cast<INT_PTR>(::ShellExecuteW(owner, L"open", gitBash.c_str(), args.c_str(),
-                                                         dir.c_str(), SW_SHOWNORMAL)) > 32)
-                return;
+            if (tryLaunch(gitBash, L"--cd=\"" + dir + L"\"")) return;
         }
     }
     if (choice == "windows-terminal" || choice == "git-bash") {
-        const std::wstring args = L"-d \"" + dir + L"\"";
-        if (reinterpret_cast<INT_PTR>(::ShellExecuteW(owner, L"open", L"wt.exe", args.c_str(), dir.c_str(),
-                                                     SW_SHOWNORMAL)) > 32)
-            return;
+        if (tryLaunch(L"wt.exe", L"-d \"" + dir + L"\"")) return;
     }
     if (choice == "powershell") {
-        const std::wstring args = L"-NoExit -Command Set-Location -LiteralPath '" + dir + L"'";
-        if (reinterpret_cast<INT_PTR>(::ShellExecuteW(owner, L"open", L"powershell.exe", args.c_str(),
-                                                     dir.c_str(), SW_SHOWNORMAL)) > 32)
+        if (tryLaunch(L"powershell.exe",
+                      L"-NoExit -Command Set-Location -LiteralPath '" + dir + L"'"))
             return;
     }
-    const std::wstring args = L"/K cd /d \"" + dir + L"\"";
-    ::ShellExecuteW(owner, L"open", L"cmd.exe", args.c_str(), dir.c_str(), SW_SHOWNORMAL);
+    if (tryLaunch(L"cmd.exe", L"/K cd /d \"" + dir + L"\"")) return;
+
+    if (!cancelled) {
+        ::MessageBoxW(owner, Str(IDS_MSG_TERMINAL_ELEVATE_FAILED).c_str(), Str(IDS_TITLE_MAIN).c_str(),
+                      MB_OK | MB_ICONWARNING);
+    }
 }
 
 // 追加忽略模式到仓库根的 .gitignore
@@ -240,7 +267,7 @@ bool ModalDialogsSuppressed() { return gSuppressModal; }
 
 InternalAction ActionOfInternal(CommandId id) {
     switch (id) {
-        case 1003: return InternalAction::Console;
+        // case 1003：app.console「打开 GitRT 控制台」已移除（见 gui.h 的说明），ID 不复用
         case 1004: return InternalAction::Terminal;
         case 1104: return InternalAction::Gitignore;
         case 1108: return InternalAction::SquashWindow;
@@ -282,12 +309,6 @@ bool OpensDedicatedWindow(CommandId id) {
 void ExecuteInternalCommand(HWND owner, const CommandSpec& spec, const std::vector<std::wstring>& paths,
                             const std::map<std::string, std::wstring>* flags) {
     switch (ActionOfInternal(spec.id)) {
-        case InternalAction::Console:   // app.console：把主窗口带到前台
-            if (App().main) {
-                ::ShowWindow(App().main, SW_RESTORE);
-                ::SetForegroundWindow(App().main);
-            }
-            return;
         case InternalAction::Terminal:   // app.terminal
             LaunchTerminal(owner, flags);
             return;

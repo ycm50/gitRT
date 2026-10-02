@@ -3,6 +3,7 @@
 #include <memory>
 #include <thread>
 #include "gui.h"
+#include "post_owned.h"   // PostMessageW 所有权交接（unique_ptr + release）
 
 #include <algorithm>
 #include <map>
@@ -20,6 +21,10 @@ enum : int {
 };
 enum : UINT_PTR { kTimerDisarm = 7, kTimerPreview = 8 };
 
+// ToggleValue（复选 + 可选值）里，输入框内容在 flags 里的 key 后缀。
+// 与 core/command_builder.cpp 的 FlagValue() 必须保持一致。
+constexpr const char* kToggleValueSuffix = ".value";
+
 namespace {
 
 struct CtrlInfo {
@@ -29,6 +34,8 @@ struct CtrlInfo {
     std::string    radioGroup;
     bool           isParam = false;
     ParamKind      paramKind = ParamKind::None;
+    // 仅 ToggleValue 用：与复选框同一行的值输入框（勾选后启用；留空 = 用 git 默认语义）
+    HWND           valueH = nullptr;
 };
 
 struct PanelState {
@@ -107,6 +114,15 @@ void SyncValues(PanelState* st) {
             case FlagKind::Value:
                 st->flags[c.key] = GetText(c.h);
                 break;
+            case FlagKind::ToggleValue: {
+                // flags[key]     = "1"/"0"：勾没勾（勾上才进 argv）
+                // flags[key.value] = 输入框内容：可留空（用 git 的默认语义）
+                // 两者分开存，勾选状态与输入内容互不覆盖。
+                const bool on = ::SendMessageW(c.h, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                st->flags[c.key] = on ? L"1" : L"0";
+                if (c.valueH) st->flags[c.key + kToggleValueSuffix] = GetText(c.valueH);
+                break;
+            }
         }
     }
 }
@@ -136,9 +152,10 @@ void RequestPreview(HWND hwnd, PanelState* st) {
         uint16_t title = 0;
         std::wstring body;
         const bool ok = BuildViewText(id, paths, flags, &title, &body);
-        auto* payload = ok ? new std::wstring(body) : nullptr;
-        if (!::PostMessageW(hwnd, WM_GRT_PANEL_PREVIEW, 0, reinterpret_cast<LPARAM>(payload)))
-            delete payload;   // 窗口已销毁 → 自己回收，避免泄漏
+        // ok 为 false 时投空指针（接收端据此判定"算不出来"）；
+        // 投递失败时 PostOwned 就地回收，避免泄漏
+        PostOwned(hwnd, WM_GRT_PANEL_PREVIEW,
+                  ok ? std::make_unique<std::wstring>(body) : std::unique_ptr<std::wstring>());
     }).detach();
 }
 // 阶段二的标签 / 发布：这四个命令的 GUI 形态是**专用窗口**（tag_window / release_window），
@@ -334,6 +351,32 @@ void BuildControls(HWND hwnd, PanelState* st) {
                 ctl = MakeChild(hwnd, WC_BUTTONW, label, style, 0, id, Th().fontUi);
                 if (FlagOn(st->flags, f.key, f.defaultOn)) ::SendMessageW(ctl, BM_SETCHECK, BST_CHECKED, 0);
                 st->stack.emplace_back(ctl, Scale(24));
+            } else if (f.kind == FlagKind::ToggleValue) {
+                // 复选 + 可选值：勾选框与值输入框**紧挨着**，勾上就有地方填参数。
+                // 布局是"纵向栈"，所以这里用两行表达一个选项：
+                //   第 1 行：☑ 标签
+                //   第 2 行：（缩进）输入框 —— 未勾选时禁用并给灰字提示"勾选后可填…"
+                ctl = MakeChild(hwnd, WC_BUTTONW, label,
+                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0, id, Th().fontUi);
+                const bool on = FlagOn(st->flags, f.key, f.defaultOn);
+                if (on) ::SendMessageW(ctl, BM_SETCHECK, BST_CHECKED, 0);
+                st->stack.emplace_back(ctl, Scale(24));
+
+                HWND vedit = MakeChild(hwnd, WC_EDITW, L"",
+                                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
+                                       WS_EX_CLIENTEDGE, id + 500, Th().fontUi);
+                // 预填既有值（右键菜单/配置/上次执行留下的）
+                const auto itv = st->flags.find(std::string(f.key) + kToggleValueSuffix);
+                if (itv != st->flags.end()) SetText(vedit, itv->second);
+                ::EnableWindow(vedit, on ? TRUE : FALSE);
+                ::SendMessageW(vedit, EM_SETCUEBANNER, TRUE,
+                               reinterpret_cast<LPARAM>(Str(IDS_FLAG_VALUE_HINT).c_str()));
+                st->stack.emplace_back(vedit, Scale(26));
+                // 记住这对控件（值框单独记一条，key 带 .value 后缀，SyncValues 用 valueH 取）
+                st->ctrls.push_back(CtrlInfo{vedit, std::string(f.key) + kToggleValueSuffix,
+                                             FlagKind::ToggleValue, "", false, ParamKind::None});
+                st->ctrls.push_back(CtrlInfo{ctl, f.key, f.kind, "", false, ParamKind::None, vedit});
+                continue;   // 已自行 push 两条，跳过结尾的通用 push
             } else {
                 ctl = MakeChild(hwnd, WC_BUTTONW, label,
                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0, id, Th().fontUi);
@@ -447,6 +490,16 @@ LRESULT CALLBACK PanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if ((code == EN_CHANGE || code == CBN_SELCHANGE || code == CBN_EDITCHANGE || code == BN_CLICKED) &&
                 id >= IDC_PP_PARAM_BASE) {
                 if (st->armed) Disarm(st, hwnd);   // 改动参数后重新确认
+                // ToggleValue：复选框的勾选状态直接决定同一选项的值输入框可不可用
+                //   （未勾选 → 灰掉，避免"填了却没勾"这种看不出为什么没生效的状态）
+                if (code == BN_CLICKED) {
+                    for (const auto& c : st->ctrls) {
+                        if (c.valueH && reinterpret_cast<HWND>(lp) == c.h) {
+                            const bool on = ::SendMessageW(c.h, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                            ::EnableWindow(c.valueH, on ? TRUE : FALSE);
+                        }
+                    }
+                }
                 RebuildPreview(st);
             }
             return 0;
@@ -512,7 +565,7 @@ LRESULT CALLBACK PanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (HWND main = App().main) ::PostMessageW(main, WM_GRT_STATUS_RELOAD, 1, 0);
             // AI 助手窗口靠这条消息拿"运行结果"
             if (HWND owner = ::GetWindow(hwnd, GW_OWNER); owner && oc) {
-                auto* ts = new TaskSummary();
+                auto ts = std::make_unique<TaskSummary>();
                 ts->ok = oc->ok;
                 ts->cancelled = oc->cancelled;
                 ts->exitCode = oc->exitCode;
@@ -521,7 +574,8 @@ LRESULT CALLBACK PanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 std::string body = oc->out;
                 if (body.size() > 8000) body = body.substr(body.size() - 8000);
                 ts->output = W(body);
-                ::PostMessageW(owner, WM_GRT_TASK_FINISHED, 0, reinterpret_cast<LPARAM>(ts));
+                // ★ 原先这里没检查返回值 —— 投递失败就是**必漏**（窗口已销毁时）
+                PostOwned(owner, WM_GRT_TASK_FINISHED, std::move(ts));
             }
             return 0;
         }

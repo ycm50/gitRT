@@ -178,11 +178,7 @@ SquashPlan BuildSquashPlan(const std::wstring& gitExe, const std::wstring& repoR
                          L"\uff09\uff0c\u8fd9\u79cd\u63d0\u4ea4\u4e0d\u80fd\u88ab\u8fd9\u6837\u5408\u5e76";
             return plan;
         }
-        if (chain[i].parentCount == 0) {   // 第一父链上只有最旧那条可能是根提交
-            plan.error = L"\u6240\u9009\u533a\u95f4\u89e6\u5230**\u6839\u63d0\u4ea4**\uff08" + chain[i].shortHash +
-                         L"\uff09\uff1a\u6839\u63d0\u4ea4\u6ca1\u6709\u7236\uff0c\u65e0\u6cd5\u4f5c\u4e3a\u5408\u5e76\u57fa\u7ebf\uff0c\u6362\u4e00\u6bb5\u533a\u95f4\u8bd5\u8bd5";
-            return plan;
-        }
+        // 触到根提交：**允许**（整仓覆盖，新提交没有父）。见下面的 touchesRoot 分支。
     }
     for (size_t i = 0; i < newest; ++i) {
         if (chain[i].parentCount != 1) {
@@ -219,7 +215,12 @@ SquashPlan BuildSquashPlan(const std::wstring& gitExe, const std::wstring& repoR
     plan.newestHash = chain[newest].hash;
     plan.headIndex = newest;
     plan.message = messageOverride.empty() ? JoinSubjects(plan.commits) : messageOverride;
-    plan.oldestParent = chain[oldest + 1].hash;   // 链上后一个就是父（第一父链）
+    // 触到根提交 = 最旧那条选中提交没有父（第一父链上只有它可能是根）。
+    // ★ 这是"合并到基线"的关键：此时新提交**没有父**，历史被整段覆盖。
+    plan.touchesRoot = (chain[oldest].parentCount == 0);
+    plan.hasParent = !plan.touchesRoot;
+    // 链上后一个就是父（第一父链）；触根时没有父，保持为空
+    plan.oldestParent = plan.hasParent ? chain[oldest + 1].hash : std::wstring();
     {
         int rc = 0;
         plan.newestTree = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", plan.newestHash + L"^{tree}"}, &rc));
@@ -230,20 +231,33 @@ SquashPlan BuildSquashPlan(const std::wstring& gitExe, const std::wstring& repoR
     }
 
     const std::wstring msgOneLine = plan.message.substr(0, plan.message.find(L'\n'));
+    const std::wstring parentShort = plan.hasParent
+                                         ? (L" -p " + plan.oldestParent.substr(0, 12) + L"…")
+                                         : std::wstring(L"  (无父 = 新的根提交)");
     if (newest == 0) {
-        plan.mode = L"reset-soft";
-        plan.commandLines = {
-            L"git reset --soft " + plan.oldestParent,
-            L"git commit -m \"" + msgOneLine + L"\"" +
-                (plan.message.find(L'\n') == std::wstring::npos
-                     ? L""
-                     : L"   (合并信息共 " + std::to_wstring(std::count(plan.message.begin(), plan.message.end(), L'\n') + 1) + L" 行)"),
-        };
+        if (plan.hasParent) {
+            plan.mode = L"reset-soft";
+            plan.commandLines = {
+                L"git reset --soft " + plan.oldestParent,
+                L"git commit -m \"" + msgOneLine + L"\"" +
+                    (plan.message.find(L'\n') == std::wstring::npos
+                         ? L""
+                         : L"   (合并信息共 " + std::to_wstring(std::count(plan.message.begin(), plan.message.end(), L'\n') + 1) + L" 行)"),
+            };
+        } else {
+            // 含 HEAD 又触到根：没有父可用 reset --soft <父>，改成"先造无父提交、再 reset --soft 到它"
+            plan.mode = L"commit-tree+reset";
+            plan.commandLines = {
+                L"git commit-tree " + plan.newestTree.substr(0, 12) + L"…" + parentShort + L" -m \"" +
+                    msgOneLine + L"\"",
+                L"git reset --soft <新提交>   (新提交没有父 → 仓库变成一个只有 1 条提交的全新历史)",
+            };
+        }
     } else {
         plan.mode = L"commit-tree+rebase";
         plan.commandLines = {
-            L"git commit-tree " + plan.newestTree.substr(0, 12) + L"… -p " + plan.oldestParent.substr(0, 12) +
-                L"… -m \"" + msgOneLine + L"\"",
+            L"git commit-tree " + plan.newestTree.substr(0, 12) + L"…" + parentShort + L" -m \"" +
+                msgOneLine + L"\"",
             L"git rebase --onto <新提交> " + chain[newest].shortHash,
         };
     }
@@ -299,10 +313,18 @@ SquashResult ApplySquash(const std::wstring& gitExe, const std::wstring& repoRoo
         return res;
     }
 
-    // commit-tree + rebase --onto
-    const RunResult c = step({L"commit-tree", plan.newestTree, L"-p", plan.oldestParent, L"-m", plan.message},
-                             L"git commit-tree " + plan.newestTree.substr(0, 12) + L"… -p " +
-                                 plan.oldestParent.substr(0, 12) + L"… -m \"" + msgOneLine + L"\"");
+    // ---- commit-tree（可选 -p）：触到根提交时**不带 -p** → 新提交没有父（新的根） ----
+    std::vector<std::wstring> ctArgs{L"commit-tree", plan.newestTree};
+    const std::wstring parentShort =
+        plan.hasParent ? (L" -p " + plan.oldestParent.substr(0, 12) + L"…") : std::wstring();
+    if (plan.hasParent) {
+        ctArgs.push_back(L"-p");
+        ctArgs.push_back(plan.oldestParent);
+    }
+    ctArgs.push_back(L"-m");
+    ctArgs.push_back(plan.message);
+    const RunResult c = step(ctArgs, L"git commit-tree " + plan.newestTree.substr(0, 12) + L"…" + parentShort +
+                                          L" -m \"" + msgOneLine + L"\"");
     if (c.exitCode != 0) {
         res.error = L"git commit-tree 失败：" + Trim(W(c.err));
         return res;
@@ -313,6 +335,27 @@ SquashResult ApplySquash(const std::wstring& gitExe, const std::wstring& repoRoo
         return res;
     }
     res.newHash = newHash;
+
+    // ---- 含 HEAD 又触根：reset --soft 到无父的新提交（不能再走 rebase，因为没有公共基）----
+    if (plan.mode == L"commit-tree+reset") {
+        const RunResult r = step({L"reset", L"--soft", newHash},
+                                 L"git reset --soft " + newHash.substr(0, 12) + L"…");
+        if (r.exitCode != 0) {
+            res.error = L"git reset --soft 失败（新提交 " + newHash.substr(0, 12) +
+                        L" 已创建）：" + Trim(W(r.err));
+            return res;
+        }
+        int rc = 0;
+        const std::wstring head = Trim(RunGitOut(gitExe, repoRoot, {L"rev-parse", L"HEAD"}, &rc));
+        if (rc != 0 || head != newHash) {
+            res.error = L"新提交已创建，但 HEAD 没有指到它（当前 " + head.substr(0, 12) + L"）";
+            return res;
+        }
+        res.ok = true;
+        return res;
+    }
+
+    // ---- 不含 HEAD：rebase --onto（触根时重放到无父的新根上）----
     const RunResult d = step({L"rebase", L"--onto", newHash, plan.newestHash},
                              L"git rebase --onto " + newHash.substr(0, 12) + L"… " + plan.newestHash.substr(0, 12) + L"…");
     if (d.exitCode != 0) {
