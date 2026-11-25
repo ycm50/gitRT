@@ -68,6 +68,9 @@ Copy-Item -LiteralPath $exe -Destination (Join-Path $stage 'app') -Force
 Copy-Item -LiteralPath $dll -Destination (Join-Path $stage 'app') -Force
 if ($probe) { Copy-Item -LiteralPath $probe.FullName -Destination (Join-Path $stage 'app') -Force }
 Copy-Item -Path (Join-Path $layout '*') -Destination (Join-Path $stage 'package') -Recurse -Force
+# ★ Shell DLL 也要进 package：安装时它会被放进 master（ExternalLocation），
+#   而清单里的 com:Class/@Path 是相对 ExternalLocation 的。见 install.ps1 第 2 步。
+Copy-Item -LiteralPath $dll -Destination (Join-Path $stage 'package') -Force
 
 foreach ($s in @('install.ps1', 'uninstall.ps1', '使用说明.txt')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $s) -Destination $stage -Force

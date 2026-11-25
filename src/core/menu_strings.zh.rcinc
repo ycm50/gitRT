@@ -48,6 +48,9 @@
   IDS_CMD_ADV_CLEAN       "清理未跟踪文件…"
   IDS_CMD_ADV_RESET       "重置到…"
   IDS_CMD_ADV_MAINTENANCE "垃圾回收（git gc）"
+  // ---- 代理设置（写 git 的 http.proxy；端口号自动补成 http://127.0.0.1:<端口>）
+  IDS_CMD_ADV_PROXY_SET   "设置代理…"
+  IDS_CMD_ADV_PROXY_UNSET "取消代理设置"
   IDS_CMD_APP_SETTINGS    "首选项…"
   IDS_CMD_APP_DOCTOR      "自检"
   IDS_CMD_APP_AI          "AI 助手（用自然语言生成命令）"
@@ -95,6 +98,8 @@ IDS_FLAG_CLONE_FILTER       "部分克隆 --filter（如 blob:none）"
   IDS_TERM_WT                "Windows Terminal"
   IDS_TERM_CMD               "命令提示符"
   IDS_FLAG_TERMINAL_ADMIN    "以管理员身份打开（会弹 UAC 提权）"
+  // ---- 代理设置的作用域（--global）
+  IDS_FLAG_GLOBAL            "全局（--global：对这台机器上所有仓库生效；不勾 = 只改当前仓库）"
 
   // ---- 标签 / 发布 的选项（tag.* / release.*）
   IDS_FLAG_TAG_ANNOTATED     "附注标签 (-a -m：会记录打标签的人、时间与说明)"

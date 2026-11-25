@@ -113,10 +113,24 @@ if ($running) {
 Step "2/4 释放二进制到 $InstallDir"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -Path (Join-Path $Source 'app\*') -Destination $InstallDir -Force
+
+# ★ 稀疏包的 ExternalLocation 必须是一个**只装 Shell 侧文件**的子目录（默认 master\），
+#   GUI 的 GitRT.exe 必须留在它**外面**。为什么（2026-11-25 实测，别再改回去）：
+#   带包身份启动的进程，如果 exe 位于 ExternalLocation 目录树内，任务栏按钮的图标会取自
+#   清单里的 VisualElements 徽标（Square44x44Logo.png，透明底小图）→ 在 24px 任务栏上
+#   就是一块**空白深色方块**；把 exe 挪出 ExternalLocation 之后，Windows 才回去读 exe 内嵌
+#   的 gitrt.ico，任务栏恢复成橙色勾。补徽标 targetsize-*/scale-*、改 AppListEntry、
+#   用 breakaway 属性、用 WMI 创建进程——这几条都试过，全部无效。
 $pkgSrc = Join-Path $Source 'package'
+$pkgRoot = Join-Path $InstallDir 'master'
 if (Test-Path $pkgSrc) {
-    # 稀疏包（清单 + 图标）留在安装目录，方便以后再次注册
-    Copy-Item -Path $pkgSrc -Destination $InstallDir -Recurse -Force
+    New-Item -ItemType Directory -Force -Path $pkgRoot | Out-Null
+    # 清单 + Assets 徽标
+    Copy-Item -Path (Join-Path $pkgSrc '*') -Destination $pkgRoot -Recurse -Force
+    # ★ Shell DLL 也放进 ExternalLocation：清单里 com:Class/@Path 是相对它的
+    $shellDll = Join-Path $InstallDir 'GitRT.Shell.dll'
+    if (Test-Path $shellDll) { Copy-Item -LiteralPath $shellDll -Destination $pkgRoot -Force }
+    Say "  稀疏包布局：$pkgRoot（GUI 在它外面 → 任务栏图标正常）" 'DarkGray'
 }
 foreach ($n in @('README.md', 'LICENSE', 'README.txt')) {
     $s = Join-Path $Source $n
@@ -186,9 +200,9 @@ if (-not $NoSmokeTest) {
 # 可选：现代右键菜单（免签名稀疏包，需要开发者模式）
 if ($registerMenu) {
     Step '注册资源管理器右键菜单（稀疏身份包，免签名）'
-    $manifest = Join-Path $InstallDir 'package\AppxManifest.xml'
+    $manifest = Join-Path $pkgRoot 'AppxManifest.xml'
     if (-not (Test-Path $manifest)) {
-        Say "  [跳过] 安装目录里没有 package\AppxManifest.xml" 'Yellow'
+        Say "  [跳过] 安装目录里没有 master\AppxManifest.xml" 'Yellow'
     } else {
         $unlock = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
         $dev = (Get-ItemProperty -Path $unlock -Name AllowDevelopmentWithoutDevLicense -ErrorAction SilentlyContinue).AllowDevelopmentWithoutDevLicense
@@ -209,7 +223,8 @@ if ($registerMenu) {
                     ) | Out-Null
                     Start-Sleep -Milliseconds 500
                 }
-                Add-AppxPackage -Register $manifest -ExternalLocation $InstallDir
+                # ★ ExternalLocation 是 master\（不是安装根）：见第 2 步的说明
+                Add-AppxPackage -Register $manifest -ExternalLocation $pkgRoot
                 Say "  [OK] 已注册；重启资源管理器后右键可见" 'Green'
                 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Milliseconds 1200

@@ -29,6 +29,18 @@ bool IsValidBranchName(std::wstring_view s) {
     return true;
 }
 
+bool NormalizeProxyPort(std::wstring_view port, std::wstring* url) {
+    const std::wstring t = Trim(port);
+    if (t.empty() || t.size() > 5) return false;
+    for (const wchar_t c : t) {
+        if (c < L'0' || c > L'9') return false;
+    }
+    const int n = _wtoi(t.c_str());
+    if (n < 1 || n > 65535) return false;
+    if (url) *url = L"http://127.0.0.1:" + std::to_wstring(n);
+    return true;
+}
+
 bool IsValidRemoteName(std::wstring_view s) {
     if (s.empty() || s.size() > 64) return false;
     for (wchar_t c : s) {
@@ -303,7 +315,9 @@ bool BuildCommand(const BuildInput& in, BuiltCommand* out, BuildError* err) {
     }
 
     // ---- 参数校验（按 ParamKind）----
-    const std::wstring paramValue =
+    // 注意 paramValue 是**规范化后的值**（供 {key} 展开用）：ProxyPort 会在这里变成
+    // 完整地址——校验与展开用的是同一个值，预览里看到的就是真正会写进 git 的地址。
+    std::wstring paramValue =
         spec.paramKey ? in.params.count(spec.paramKey) ? in.params.at(spec.paramKey) : std::wstring()
                       : std::wstring();
     if (ParamRequired(spec) && Trim(paramValue).empty()) {
@@ -361,6 +375,19 @@ bool BuildCommand(const BuildInput& in, BuiltCommand* out, BuildError* err) {
                 return false;
             }
             break;
+        case ParamKind::ProxyPort: {
+            // 参数是**端口号**：构造期补全成 http://127.0.0.1:<端口>（见 NormalizeProxyPort）
+            std::wstring url;
+            if (!NormalizeProxyPort(paramValue, &url)) {
+                err->code = 4023;
+                err->message = L"端口号不合法：只填数字（1-65535），会自动补成 http://127.0.0.1:<端口>，"
+                               L"当前输入：" + paramValue;
+                err->field = spec.paramKey;
+                return false;
+            }
+            paramValue = url;   // ★ 展开 {port} 时用的就是补全后的完整地址
+            break;
+        }
         default:
             break;
     }
@@ -436,12 +463,28 @@ bool BuildCommand(const BuildInput& in, BuiltCommand* out, BuildError* err) {
         std::vector<std::wstring> argv;
         const std::vector<std::wstring> tokens = SplitWhitespace(WideToUtf8(seg));
         bool pathsInserted = false;
+        // 作用域占位符（git config 的 --global）：它不是 flag，而是**位置**——
+        // 勾了就在 {scope} 处放一个 --global，不勾就整个消失（不是留空字符串，
+        // 否则 git 会把它当成一个空参数）。为什么不用 FlagSpec + gitArg：
+        // 表内 flag 的顺序由表决定，而 --global 必须出现在 `config` 之后、键名之前，
+        // 只有模板位置能表达。
+        // 默认值取自命令表（kProxyScopeFlags 里 global 是 defaultOn=true），
+        // 这样"用户没显式给"与"用户勾了"走同一条判断，不会出现两处默认值。
+        bool withGlobal = true;
+        if (const FlagSpec* gf = FindFlag(spec, "global")) withGlobal = FlagEnabled(in.flags, *gf);
         for (size_t ti = 0; ti < tokens.size(); ++ti) {
             const std::wstring& token = tokens[ti];
             // 模板里的程序名要去掉：真正的可执行文件由 Invocation.exe 提供，
             // 否则会执行成 "git git reset ..."（此前只有真正跑一遍才暴露出来）
             if (ti == 0 && (token == L"git" || token == L"git.exe")) continue;
-            if (token == L"{flags}") {
+            if (token == L"{scope}") {
+                if (withGlobal) argv.push_back(L"--global");
+            } else if (token == L"{empty}") {
+                // 显式空值（"取消代理"就是 `git config http.proxy ""`）：必须真的把这个
+                // 空字符串作为**一个** argv 元素传下去，绝不能"跳过"——跳过等于没写配置。
+                // （git 从 argv 拼命令行，空串会被引号包住，不会消失。）
+                argv.push_back(L"");
+            } else if (token == L"{flags}") {
                 argv.insert(argv.end(), flagsArgv.begin(), flagsArgv.end());
             } else if (token == L"{paths}") {
                 pathsInserted = true;
@@ -451,6 +494,12 @@ bool BuildCommand(const BuildInput& in, BuiltCommand* out, BuildError* err) {
                 }
             } else if (!token.empty() && token.front() == L'{' && token.back() == L'}') {
                 const std::string key = WideToUtf8(std::wstring_view(token).substr(1, token.size() - 2));
+                // ★ 本条命令自己的参数用**校验/规范化之后**的 paramValue，而不是原始输入：
+                //   代理那条命令的用户输入是「端口号」，写进 argv 的必须是补全后的完整地址。
+                if (spec.paramKey && key == spec.paramKey) {
+                    argv.push_back(paramValue);
+                    continue;
+                }
                 const auto pit = in.params.find(key);
                 if (pit == in.params.end() || pit->second.empty()) {
                     err->code = 4022;

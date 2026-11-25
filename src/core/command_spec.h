@@ -28,7 +28,8 @@ enum class Danger : uint8_t { Safe, Careful, Destructive };
 
 enum class ParamKind : uint8_t {
     None, Text, CommitMessage, BranchName, ExistingBranch,
-    RemoteName, Revision, TagName, Url, Pattern
+    RemoteName, Revision, TagName, Url, Pattern,
+    ProxyPort     // 端口号（只填数字）：构造期自动补全成 http://127.0.0.1:<端口>
 };
 
 enum class ParamSource : uint8_t {

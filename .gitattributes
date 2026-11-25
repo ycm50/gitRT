@@ -45,6 +45,11 @@ LICENSE           text eol=lf
 *.reg   text eol=crlf
 
 # 二进制：一律不转换、不在 diff 里展开
+# ★ .sqlite：仓库自带开发知识库 .kb/kb.sqlite（随仓库提交）。git 虽然能靠 NUL 字节自动判成
+#   二进制，但写明白可以避免将来有人加 `* text=auto eol=lf` 之类规则时把它改坏 ——
+#   SQLite 文件被行尾转换一次就再也打不开了。
+*.sqlite binary
+*.sqlite3 binary
 *.ico   binary
 *.png   binary
 *.jpg   binary

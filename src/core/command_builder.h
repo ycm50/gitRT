@@ -45,6 +45,11 @@ std::wstring QuoteArg(const std::wstring& arg);
 
 // 参数校验（供参数面板做实时校验）
 bool IsValidBranchName(std::wstring_view s);
+// 代理：用户只填端口号，这里补全成 http://127.0.0.1:<端口>（"参数是端口号，自动补全"）。
+//   只接受十进制数字且 1..65535；其余一律 false（构造期拦下，别丢给 git 报错）。
+//   允许两侧空白（粘贴常见），也允许写成 "http://127.0.0.1:10808"？——**不接受**：
+//   输入框的语义就是"端口号"，多写一个前缀只会让预览里出现两层地址。
+bool NormalizeProxyPort(std::wstring_view port, std::wstring* url);
 bool IsValidRemoteName(std::wstring_view s);
 bool IsValidRevision(std::wstring_view s);
 bool IsValidUrl(std::wstring_view s);

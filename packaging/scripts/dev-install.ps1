@@ -41,6 +41,13 @@ Copy-Item -LiteralPath $dll -Destination $InstallDir -Force
 if ($probe) { Copy-Item -LiteralPath $probe.FullName -Destination $InstallDir -Force }
 Write-Host "  已铺：GitRT.exe, GitRT.Shell.dll$([bool]$probe ? ', GitRT.ShellProbe.exe' : '')" -ForegroundColor DarkGray
 
+# ★ ExternalLocation 用**只装 Shell 侧文件**的子目录（master），GUI 必须留在它外面 ——
+#   否则任务栏按钮会显示成空白方块（exe 在 ExternalLocation 内 → 图标取自清单徽标而不是
+#   exe 内嵌 .ico）。完整说明见 packaging/scripts/install.ps1 第 2 步与 docs/支持矩阵.md §2.1b。
+$pkgRoot = Join-Path $InstallDir 'master'
+New-Item -ItemType Directory -Force -Path $pkgRoot | Out-Null
+Copy-Item -LiteralPath $dll -Destination $pkgRoot -Force
+
 if (-not $SkipPackage) {
     # 同版本重复注册会 0x80073CF9（§3.2）→ 先卸载（必须独立进程，避免 0x80073CFA）
     $existing = Get-AppxPackage -Name (Get-Content (Join-Path $repoRoot 'packaging\identity.json') -Raw |
@@ -57,7 +64,7 @@ if (-not $SkipPackage) {
         $msixPath = Join-Path $OutDir 'GitRT.msix'
         if (-not (Test-Path $msixPath)) { throw "找不到 $msixPath；请先运行 build-msix.ps1" }
         Write-Host "注册已签名稀疏包：$msixPath" -ForegroundColor Cyan
-        Add-AppxPackage -Path $msixPath -ExternalLocation $InstallDir
+        Add-AppxPackage -Path $msixPath -ExternalLocation $pkgRoot
     } else {
         $layout = Join-Path $OutDir 'sparse'
         # ★ 每次都重新组装：稀疏包目录里的 AppxManifest.xml 是**拷贝**，
@@ -66,8 +73,10 @@ if (-not $SkipPackage) {
         Write-Host "组装稀疏包目录（含清单校验）" -ForegroundColor Cyan
         & (Join-Path $PSScriptRoot 'build-msix.ps1') -Config $Config -OutDir $OutDir -LayoutOnly
         if (-not (Test-Path (Join-Path $layout 'AppxManifest.xml'))) { throw "稀疏包清单未生成：$layout" }
-        Write-Host "免签名 loose 注册：$layout\AppxManifest.xml" -ForegroundColor Cyan
-        Add-AppxPackage -Register (Join-Path $layout 'AppxManifest.xml') -ExternalLocation $InstallDir
+        # 清单与 Assets 也要进 master（ExternalLocation 的全部内容都从它取）
+        Copy-Item -Path (Join-Path $layout '*') -Destination $pkgRoot -Recurse -Force
+        Write-Host "免签名 loose 注册：$pkgRoot\AppxManifest.xml" -ForegroundColor Cyan
+        Add-AppxPackage -Register (Join-Path $pkgRoot 'AppxManifest.xml') -ExternalLocation $pkgRoot
     }
     $pkg = Get-AppxPackage -Name (Get-Content (Join-Path $repoRoot 'packaging\identity.json') -Raw |
                                   ConvertFrom-Json).packageName

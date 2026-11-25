@@ -48,6 +48,9 @@
 #define IDS_CMD_ADV_CLEAN          2601
 #define IDS_CMD_ADV_RESET          2602
 #define IDS_CMD_ADV_MAINTENANCE    2607
+// ---- 代理设置（adv.proxy-set / adv.proxy-unset）
+#define IDS_CMD_ADV_PROXY_SET      2608   // 设置代理…（端口号 → http://127.0.0.1:<端口>）
+#define IDS_CMD_ADV_PROXY_UNSET    2609   // 取消代理设置
 #define IDS_CMD_APP_SETTINGS       2701
 #define IDS_CMD_APP_DOCTOR         2702
 #define IDS_CMD_APP_AI             2703
@@ -111,6 +114,10 @@
 #define IDS_TERM_CMD               3043
 // 「以管理员身份打开」：勾上后走 ShellExecuteW 的 runas 动词（触发 UAC）
 #define IDS_FLAG_TERMINAL_ADMIN    3056
+// ---- 代理设置：作用域开关（勾 = git config --global，不勾 = 只对本仓库）
+#define IDS_FLAG_GLOBAL            3057
+// 端口号输入框的说明（只填数字，构造期补全成 http://127.0.0.1:<端口>）
+#define IDS_PARAM_PROXY_PORT       3107
 #define IDS_MSG_TERMINAL_UAC_CANCELLED 4120
 #define IDS_MSG_TERMINAL_ELEVATE_FAILED 4121
 
