@@ -18,6 +18,7 @@ BEGIN
   IDS_PARAM_REVISION  "修订（如 HEAD~1、提交哈希）"
   IDS_PARAM_TAG       "标签名"
   IDS_PARAM_PATTERN   "忽略模式（每行一个）"
+  IDS_PARAM_PROXY_PORT "端口号（只填数字，例如 10808 → 自动补成 http://127.0.0.1:10808）"
 
   IDS_MSG_READY          "就绪"
   IDS_MSG_NO_REPO        "尚未选择仓库"

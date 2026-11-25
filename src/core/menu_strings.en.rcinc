@@ -47,6 +47,9 @@
   IDS_CMD_ADV_CLEAN       "Clean untracked files..."
   IDS_CMD_ADV_RESET       "Reset to..."
   IDS_CMD_ADV_MAINTENANCE "Garbage collection (git gc)"
+  // ---- proxy settings (writes git's http.proxy; port auto-expands to http://127.0.0.1:<port>)
+  IDS_CMD_ADV_PROXY_SET   "Set proxy..."
+  IDS_CMD_ADV_PROXY_UNSET "Clear proxy setting"
   IDS_CMD_APP_SETTINGS    "Preferences..."
   IDS_CMD_APP_DOCTOR      "Self-check"
   IDS_CMD_APP_AI          "AI assistant (natural language to command)"
@@ -94,6 +97,8 @@ IDS_FLAG_CLONE_FILTER       "Partial clone --filter (e.g. blob:none)"
   IDS_TERM_WT                "Windows Terminal"
   IDS_TERM_CMD               "Command Prompt"
   IDS_FLAG_TERMINAL_ADMIN    "Open as administrator (triggers UAC)"
+  // ---- proxy scope (--global)
+  IDS_FLAG_GLOBAL            "Global (--global: this machine, all repositories; unticked = current repository only)"
 
   // ---- tag / release options (tag.* / release.*)
   IDS_FLAG_TAG_ANNOTATED     "Annotated tag (-a -m: records tagger, date and message)"

@@ -88,6 +88,7 @@ UINT ParamLabelRes(ParamKind k) {
         case ParamKind::Revision:      return IDS_PARAM_REVISION;
         case ParamKind::TagName:       return IDS_PARAM_TAG;
         case ParamKind::Url:           return IDS_PARAM_URL;
+        case ParamKind::ProxyPort:     return IDS_PARAM_PROXY_PORT;
         case ParamKind::Pattern:       return IDS_PARAM_PATTERN;
         default:                       return IDS_PARAM_MSG;
     }
@@ -304,6 +305,8 @@ void BuildControls(HWND hwnd, PanelState* st) {
             if (!items.empty()) ::SendMessageW(ctl, CB_SETCURSEL, 0, 0);
         } else {
             DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL;
+            // 代理端口：只让数字进来（真正的校验仍在 core 的构造期，这里只是少一次报错）
+            if (st->spec.param == ParamKind::ProxyPort) style |= ES_NUMBER | ES_RIGHT;
             if (multiline) style |= WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN;
             ctl = MakeChild(hwnd, WC_EDITW, L"", style, WS_EX_CLIENTEDGE, id, Th().fontUi);
             if (st->spec.param == ParamKind::Pattern) {

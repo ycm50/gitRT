@@ -97,6 +97,7 @@ int main() {
                 case ParamKind::Revision:       in.params[c.paramKey] = L"HEAD~1"; break;
                 case ParamKind::CommitMessage:  in.params[c.paramKey] = L"selftest"; break;
                 case ParamKind::Pattern:        in.params[c.paramKey] = L"*.log"; break;
+                case ParamKind::ProxyPort:      in.params[c.paramKey] = L"10808"; break;
                 default:                        in.params[c.paramKey] = L"selftest"; break;
             }
         }
@@ -474,6 +475,70 @@ int main() {
         const bool rejected = !BuildCommand(bad, &b2, &e2);
         t.Check(rejected && e2.message.find(L"正整数") != std::wstring::npos,
                 L"克隆选项：深度非正整数被拦下（" + e2.message + L"）");
+    }
+
+    // ---- 8b. 代理设置（端口号 → http://127.0.0.1:<端口>，以及 --global 作用域）----
+    //   两条命令都只碰 http.proxy：git 的 https:// 仓库也读这一个键（实测见 docs/技术实现设计.md）。
+    {
+        auto buildProxy = [](const char* key, const std::wstring& port, const std::wstring& global,
+                             BuiltCommand* out, BuildError* err) {
+            const CommandSpec* spec = FindCommandByKey(key);
+            BuildInput in;
+            in.spec = spec;
+            in.gitExe = L"git.exe";
+            in.repoRoot = L"C:\\selftest\\repo";
+            if (!port.empty()) in.params[spec ? spec->paramKey : "port"] = port;
+            if (!global.empty()) in.flags["global"] = global;
+            return spec && BuildCommand(in, out, err);
+        };
+        auto joined = [](const BuiltCommand& c) {
+            std::wstring s;
+            for (const auto& a : c.argvList.front()) {
+                if (!s.empty()) s += L' ';
+                s += a;
+            }
+            return s;
+        };
+
+        BuiltCommand setG, setL, unsetG;
+        BuildError e1, e2, e3;
+        const bool okSetG = buildProxy("adv.proxy-set", L"10808", L"", &setG, &e1);
+        const std::wstring lineG = okSetG ? joined(setG) : std::wstring();
+        t.Check(okSetG && lineG == L"config --global http.proxy http://127.0.0.1:10808",
+                L"代理设置：端口号自动补全成完整地址，且默认带 --global（" + lineG + L"）");
+
+        const bool okSetL = buildProxy("adv.proxy-set", L"10808", L"0", &setL, &e2);
+        const std::wstring lineL = okSetL ? joined(setL) : std::wstring();
+        t.Check(okSetL && lineL == L"config http.proxy http://127.0.0.1:10808",
+                L"代理设置：取消勾选 --global 后只改当前仓库（" + lineL + L"）");
+
+        const bool okUnset = buildProxy("adv.proxy-unset", L"", L"", &unsetG, &e3);
+        const bool unsetShape = okUnset && unsetG.argvList.size() == 1 &&
+                                unsetG.argvList.front().size() == 4 &&
+                                unsetG.argvList.front()[0] == L"config" &&
+                                unsetG.argvList.front()[1] == L"--global" &&
+                                unsetG.argvList.front()[2] == L"http.proxy" &&
+                                unsetG.argvList.front()[3].empty();
+        t.Check(unsetShape,
+                L"取消代理：config --global http.proxy \"\"（空串必须真的作为一个 argv 元素传下去）");
+
+        // 非法端口必须在构造期被拦下（1..65535 之外的、非数字、空、带前缀的地址）
+        auto rejected = [&](const std::wstring& port) {
+            BuiltCommand b;
+            BuildError e;
+            return !buildProxy("adv.proxy-set", port, L"", &b, &e) && !e.message.empty();
+        };
+        t.Check(rejected(L"0") && rejected(L"70000") && rejected(L"abc") && rejected(L"10808a") &&
+                    rejected(L"http://127.0.0.1:10808"),
+                L"代理设置：非法端口（0 / 70000 / abc / 带前缀地址）在构造期被拒");
+
+        // 端口两侧空白允许（粘贴常见），且补全后仍然只有一个 argv 元素
+        BuiltCommand trimB;
+        BuildError trimE;
+        const bool okTrim = buildProxy("adv.proxy-set", L" 8080 ", L"", &trimB, &trimE);
+        t.Check(okTrim && trimB.argvList.front().size() == 4 &&
+                    trimB.argvList.front().back() == L"http://127.0.0.1:8080",
+                L"代理设置：端口两侧空白被裁掉，仍是「一个」argv 元素");
     }
 
     // ---- 9. AI 直出命令的只读白名单（"方案直接输出命令"的安全边界） ----

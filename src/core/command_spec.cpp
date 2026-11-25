@@ -143,6 +143,16 @@ constexpr FlagSpec kMaintenanceFlags[] = {
     {"aggressive", "--aggressive", FlagKind::Toggle, nullptr, IDS_FLAG_AGGRESSIVE, false, false},
 };
 
+// adv.proxy-set / adv.proxy-unset（代理设置）
+// ★ global 是**纯作用域开关**（gitArg=nullptr）：它决定 git config 加不加 --global，
+//   由 command_builder 读它来决定 argv 形状（和 tag.create 的 annotated 同一套路）。
+//   两条命令共用同一个作用域开关，参数面板里就是「应用」按钮旁边的一个勾选框。
+//   ★ 默认**勾上**：代理是"给这台机器访问外网用"的设置，绝大多数人是给所有仓库配一次；
+//     预览里那条命令会明确写出 --global，不会让人"不知道改的是哪一份配置"。
+constexpr FlagSpec kProxyScopeFlags[] = {
+    {"global", nullptr, FlagKind::Toggle, nullptr, IDS_FLAG_GLOBAL, true, false},
+};
+
 // repo.init
 constexpr FlagSpec kInitFlags[] = {
     {"branch", "--initial-branch={v}", FlagKind::Value, nullptr, IDS_FLAG_BRANCH_VALUE, false, false},
@@ -317,6 +327,22 @@ const CommandSpec kCommands[] = {
     C(1607, "adv.maintenance", GroupId::Advanced, IDS_CMD_ADV_MAINTENANCE,
       kSelDir | kSelBg, true, Danger::Careful, ParamKind::None, ParamSource::None, nullptr,
       ExecKind::CliStream, kMaintenanceFlags, 1, "git gc {flags}"),
+    // 代理设置：git 只读 **http.proxy** 这一个键（**https:// 的仓库也用它**）。
+    //   实测（本机 2.56）：-c https.proxy=<坏端口> 不起作用，-c http.proxy=<坏端口> 立刻走代理失败；
+    //   所以"设置"写 http.proxy，"取消"也只用 http.proxy 表达（不用 --unset：见下）。
+    //   取消 = 把 http.proxy 设成**空串**（git 文档语义 = 不走代理），而不是 --unset：
+    //     · --unset 在键不存在时退出码 5 → 面板会显示成"执行失败"，可用户要的正是"没有代理"；
+    //     · 空串还**优先于环境变量** http_proxy（实测：http.proxy 为空时不再读 env），
+    //       所以它才是名副其实的"取消代理设置"。
+    //   requiresRepo=false：作用域选「全局」时它根本不需要仓库（非仓库目录也能用）。
+    //   {scope} 由 command_builder 按 global 勾选换成 --global；不勾时这个占位符**整个消失**
+    //   （不是留一个空参数）——它表达的是位置，而表内 flag 只能追加在 {flags} 处。
+    C(1608, "adv.proxy-set", GroupId::Advanced, IDS_CMD_ADV_PROXY_SET,
+      kSelAny, false, Danger::Safe, ParamKind::ProxyPort, ParamSource::None, "port",
+      ExecKind::CliPanel, kProxyScopeFlags, 1, "git config {scope} http.proxy {port}"),
+    C(1609, "adv.proxy-unset", GroupId::Advanced, IDS_CMD_ADV_PROXY_UNSET,
+      kSelAny, false, Danger::Careful, ParamKind::None, ParamSource::None, nullptr,
+      ExecKind::CliPanel, kProxyScopeFlags, 1, "git config {scope} http.proxy {empty}"),
 
     // ------------------------------------------------------------ 应用
     C(1701, "app.settings", GroupId::App, IDS_CMD_APP_SETTINGS,

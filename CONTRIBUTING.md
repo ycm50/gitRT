@@ -113,6 +113,7 @@ fix(build): 版本号收敛到 identity.json 唯一真相源
 | 调研材料与 URL 依据链 | `docs/research/` |
 | 安全策略 / 威胁模型 | [`SECURITY.md`](SECURITY.md) |
 | 用户可感知的变化（新增/修复/变更/升级提示） | [`CHANGELOG.md`](CHANGELOG.md) —— 改了行为就顺手加一条 |
+| **"我要改这个仓库，得先知道什么"**（结构/约定/踩过的坑/排错） | [`docs/kb/`](docs/kb/00-索引.md) —— 改完跑 `pwsh -File tools/kb-build.ps1` 重建 `.kb/kb.sqlite` 并**一起提交** |
 
 **改了文档可以顺手跑一次 `python -X utf8 tools/check-docs.py`**（**可选**，不进 CI）：它查站内链接
 目标是否存在、以及表格列数是否一致（未转义的 `|` 会让整行错位、两张表粘在一起会静默渲染歪 ——
